@@ -321,8 +321,11 @@ function sanitizeRunRequest( body ) {
 
 function handleRun( body ) {
 	const req = sanitizeRunRequest( body || {} );
+	const initialPatchRadius = 0;
 	const start = Date.now();
-	console.log( `[run] ${req.rootType}:${req.level}, bounces=${req.maxBounces}, patchRadius=${req.patchRadius}` );
+	console.log(
+		`[run] ${req.rootType}:${req.level}, bounces=${req.maxBounces}, ` +
+		`requestedPatchRadius=${req.patchRadius}, initialPatchRadius=${initialPatchRadius}` );
 	const tiling = getTiling( req.rootType, req.level );
 	const trajectoryStart = Date.now();
 	const specs = req.trajectories.map( entry => ( {
@@ -354,10 +357,12 @@ function handleRun( body ) {
 			`level=${result.level}` );
 	}
 	const payloadStart = Date.now();
-	const payload = trajectoryPayload( req, specs, results, req.patchRadius );
+	const payload = trajectoryPayload( req, specs, results, initialPatchRadius );
+	const payloadJSON = JSON.stringify( payload );
 	logTiming(
 		`[run] payload built ${req.rootType}:${req.level} ` +
-		`patchTiles=${payload.localHatConfiguration.tiles.length}`,
+		`patchTiles=${payload.localHatConfiguration.tiles.length} ` +
+		`jsonBytes=${Buffer.byteLength( payloadJSON, 'utf8' )}`,
 		payloadStart );
 	logTiming( `[run] complete ${req.rootType}:${req.level}`, start );
 	return payload;
@@ -379,7 +384,8 @@ function handlePatch( body ) {
 	const results = resultBodies.map( item => Object.assign( {}, item, {
 		rootType,
 		level,
-		focusTileIds: item.focusTileIds || focusTileIdsForResult( item )
+		focusTileIds: item.focusTileIds && item.focusTileIds.length > 0 ?
+			item.focusTileIds : focusTileIdsForResult( item )
 	} ) );
 	const patch = {
 		format: 'hatviz-billiards-trajectory-patch',

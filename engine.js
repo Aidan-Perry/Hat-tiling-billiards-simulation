@@ -189,6 +189,66 @@
 		return inside;
 	}
 
+	function polygonBounds( poly, eps ) {
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		for( const p of poly ) {
+			minX = Math.min( minX, p.x );
+			minY = Math.min( minY, p.y );
+			maxX = Math.max( maxX, p.x );
+			maxY = Math.max( maxY, p.y );
+		}
+		return {
+			minX: minX - eps,
+			minY: minY - eps,
+			maxX: maxX + eps,
+			maxY: maxY + eps
+		};
+	}
+
+	function spatialCellKey( ix, iy ) {
+		return `${ix}:${iy}`;
+	}
+
+	function buildTileSpatialIndex( tiles, eps, edgeLength ) {
+		if( !tiles || tiles.length === 0 || !(edgeLength > 0) ) {
+			return null;
+		}
+		const cellSize = edgeLength;
+		const buckets = new Map();
+		for( const tile of tiles ) {
+			const bounds = polygonBounds( tile.polygon, eps );
+			const minCellX = Math.floor( bounds.minX / cellSize );
+			const minCellY = Math.floor( bounds.minY / cellSize );
+			const maxCellX = Math.floor( bounds.maxX / cellSize );
+			const maxCellY = Math.floor( bounds.maxY / cellSize );
+			for( let ix = minCellX; ix <= maxCellX; ++ix ) {
+				for( let iy = minCellY; iy <= maxCellY; ++iy ) {
+					const key = spatialCellKey( ix, iy );
+					if( !buckets.has( key ) ) {
+						buckets.set( key, [] );
+					}
+					buckets.get( key ).push( tile.id );
+				}
+			}
+		}
+		for( const ids of buckets.values() ) {
+			ids.sort( ( a, b ) => a - b );
+		}
+		return { cellSize, buckets };
+	}
+
+	function spatialIndexCandidates( index, point ) {
+		if( !index || !index.buckets || !(index.cellSize > 0) ) {
+			return null;
+		}
+		const ix = Math.floor( point.x / index.cellSize );
+		const iy = Math.floor( point.y / index.cellSize );
+		return index.buckets.get( spatialCellKey( ix, iy ) ) || [];
+	}
+
 	function buildTiling( config ) {
 		const rootType = (config && config.rootType) || 'H';
 		const level = Math.max( 1, Math.floor( (config && config.level) || 1 ) );
@@ -224,7 +284,7 @@
 				centralTileId = tile.id;
 			}
 		}
-		return {
+		const tiling = {
 			rootType,
 			level,
 			metatiles,
@@ -238,6 +298,13 @@
 			tolerances: tol,
 			config: { rootType, level }
 		};
+		Object.defineProperty( tiling, '_tileSpatialIndex', {
+			value: buildTileSpatialIndex( tiles, tol.EPS * 100, tol.edgeLength ),
+			enumerable: false,
+			configurable: false,
+			writable: false
+		} );
+		return tiling;
 	}
 
 	function makeStartState( tiling, spec ) {
@@ -340,7 +407,7 @@
 		return null;
 	}
 
-	function locateTileContaining( tiling, point, preferredId ) {
+	function legacyLocateTileContaining( tiling, point, preferredId ) {
 		const preferred = tiling.tiles[preferredId];
 		if( preferred && pointInPolygon( point, preferred.polygon, tiling.tolerances.EPS * 100 ) ) {
 			return preferred.id;
@@ -351,6 +418,78 @@
 			}
 		}
 		return null;
+	}
+
+	function locateTileContaining( tiling, point, preferredId ) {
+		const eps = tiling.tolerances.EPS * 100;
+		const preferred = tiling.tiles[preferredId];
+		if( preferred && pointInPolygon( point, preferred.polygon, eps ) ) {
+			return preferred.id;
+		}
+		const candidates = spatialIndexCandidates( tiling._tileSpatialIndex, point );
+		if( candidates && candidates.length > 0 ) {
+			for( const id of candidates ) {
+				const tile = tiling.tiles[id];
+				if( tile && pointInPolygon( point, tile.polygon, eps ) ) {
+					return tile.id;
+				}
+			}
+		}
+		return legacyLocateTileContaining( tiling, point, preferredId );
+	}
+
+	function verifyLocateTileIndex( tiling, options ) {
+		const opts = options || {};
+		const eps = tiling.tolerances.EPS * 100;
+		const offsetDistance = opts.offsetDistance == null ?
+			tiling.tolerances.NUDGE_EPS : opts.offsetDistance;
+		const samples = [];
+		for( const tile of tiling.tiles ) {
+			samples.push( { point: tile.centroid, tileId: tile.id, kind: 'centroid' } );
+			for( const edge of tile.edges ) {
+				samples.push( { point: edge.a, tileId: tile.id, kind: 'vertex' } );
+				const midpoint = add( edge.a, scale( sub( edge.b, edge.a ), 0.5 ) );
+				samples.push( { point: midpoint, tileId: tile.id, kind: 'edge-midpoint' } );
+				const tangent = normalize( sub( edge.b, edge.a ) );
+				if( tangent ) {
+					const normal = { x: -tangent.y, y: tangent.x };
+					samples.push( {
+						point: add( midpoint, scale( normal, offsetDistance ) ),
+						tileId: tile.id,
+						kind: 'edge-offset-positive'
+					} );
+					samples.push( {
+						point: add( midpoint, scale( normal, -offsetDistance ) ),
+						tileId: tile.id,
+						kind: 'edge-offset-negative'
+					} );
+				}
+			}
+		}
+		const preferredIds = opts.preferredIds || [null, tiling.centralTileId, tiling.rootTileId];
+		for( const sample of samples ) {
+			for( const preferredId of preferredIds.concat( [sample.tileId] ) ) {
+				const indexed = locateTileContaining( tiling, sample.point, preferredId );
+				const legacy = legacyLocateTileContaining( tiling, sample.point, preferredId );
+				if( indexed !== legacy ) {
+					return {
+						ok: false,
+						tileId: sample.tileId,
+						kind: sample.kind,
+						point: sample.point,
+						preferredId,
+						indexed,
+						legacy,
+						eps
+					};
+				}
+			}
+		}
+		return {
+			ok: true,
+			sampleCount: samples.length,
+			preferredCount: preferredIds.length + 1
+		};
 	}
 
 	function nearestEdgeIndexToPoint( tile, point ) {
@@ -526,7 +665,7 @@
 		return [...seen].map( id => tiling.tiles[id] ).filter( Boolean );
 	}
 
-	global.HatBilliards = {
+	const api = {
 		buildTiling,
 		runTrajectory,
 		runTrajectoryBatch,
@@ -538,4 +677,11 @@
 		pointInPolygon,
 		tolerances
 	};
+	Object.defineProperty( api, '_verifyLocateTileIndex', {
+		value: verifyLocateTileIndex,
+		enumerable: false,
+		configurable: false,
+		writable: false
+	} );
+	global.HatBilliards = api;
 }( typeof window !== 'undefined' ? window : globalThis ));

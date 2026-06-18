@@ -917,6 +917,7 @@ async function runSimulatorTrajectory()
 	const trajectorySpecs = activeTrajectorySpecs();
 	const requestedBounces = Math.max( 0, Math.floor( readNumber( bounce_input, 40 ) ) );
 	const patchRadius = Math.max( 0, Math.floor( readNumber( patch_radius_input, 1 ) ) );
+	const initialPatchRadius = 0;
 	bounce_input.value( String( requestedBounces ) );
 	max_expansion_input.value( String( requestedMaxLevel ) );
 	patch_radius_input.value( String( patchRadius ) );
@@ -929,7 +930,7 @@ async function runSimulatorTrajectory()
 			edgeParameter: trajectorySpecs[0].edgeParameter,
 			angleDegrees: trajectorySpecs[0].angleDegrees,
 			maxBounces: requestedBounces,
-			patchRadius,
+			patchRadius: initialPatchRadius,
 			trajectories: trajectorySpecs.map( spec => ( {
 				color: spec.color,
 				startEdge: spec.startEdge,
