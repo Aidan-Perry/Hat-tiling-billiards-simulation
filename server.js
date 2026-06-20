@@ -2,11 +2,16 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const vm = require('vm');
+const crypto = require('crypto');
 
 const HOST = process.env.HATVIZ_HOST || '127.0.0.1';
 const PORT = Number(process.env.HATVIZ_PORT || 8765);
 const ROOT = __dirname;
+const DIAGNOSTICS_DIR = path.join( ROOT, 'Diagnostics' );
 const tilingCache = new Map();
+let latestDiagnosticsPayloadValue = null;
+let latestDiagnosticsJSON = '';
+let latestDiagnosticsETagValue = null;
 
 function logTiming( label, startTime ) {
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed( 2 );
@@ -150,6 +155,239 @@ function cacheTrajectoryMetadata( result ) {
 
 function pointDistance( a, b ) {
 	return Math.hypot( a.x - b.x, a.y - b.y );
+}
+
+function ensureDiagnosticsDir() {
+	fs.mkdirSync( DIAGNOSTICS_DIR, { recursive: true } );
+}
+
+function diagnosticsFileName( timestamp, runId ) {
+	return `diagnostics-${timestamp.replace( /[:.]/g, '-' )}-${runId}.json`;
+}
+
+function fitExponentialDistance( samples ) {
+	const fitted = [];
+	let skipped = 0;
+	for( const sample of samples ) {
+		const distance = Number( sample.distance );
+		if( Number.isFinite( distance ) && distance > 0 ) {
+			fitted.push( { x: sample.bounce, y: Math.log( distance ) } );
+		} else {
+			++skipped;
+		}
+	}
+	if( fitted.length < 2 ) {
+		return {
+			model: 'exponential',
+			equation: 'distance ≈ A * exp(B * bounce)',
+			A: null,
+			B: null,
+			r2: null,
+			sampleCount: samples.length,
+			fittedSampleCount: fitted.length,
+			skippedNonPositiveOrNonFiniteCount: skipped
+		};
+	}
+	let sumX = 0;
+	let sumY = 0;
+	let sumXX = 0;
+	let sumXY = 0;
+	for( const point of fitted ) {
+		sumX += point.x;
+		sumY += point.y;
+		sumXX += point.x * point.x;
+		sumXY += point.x * point.y;
+	}
+	const n = fitted.length;
+	const denom = n * sumXX - sumX * sumX;
+	if( Math.abs( denom ) < 1e-12 ) {
+		return {
+			model: 'exponential',
+			equation: 'distance ≈ A * exp(B * bounce)',
+			A: null,
+			B: null,
+			r2: null,
+			sampleCount: samples.length,
+			fittedSampleCount: fitted.length,
+			skippedNonPositiveOrNonFiniteCount: skipped
+		};
+	}
+	const slope = (n * sumXY - sumX * sumY) / denom;
+	const intercept = (sumY - slope * sumX) / n;
+	const meanY = sumY / n;
+	let ssRes = 0;
+	let ssTot = 0;
+	for( const point of fitted ) {
+		const predicted = intercept + slope * point.x;
+		ssRes += (point.y - predicted) * (point.y - predicted);
+		ssTot += (point.y - meanY) * (point.y - meanY);
+	}
+	return {
+		model: 'exponential',
+		equation: 'distance ≈ A * exp(B * bounce)',
+		A: Math.exp( intercept ),
+		B: slope,
+		r2: ssTot === 0 ? 1 : 1 - ssRes / ssTot,
+		sampleCount: samples.length,
+		fittedSampleCount: fitted.length,
+		skippedNonPositiveOrNonFiniteCount: skipped
+	};
+}
+
+function buildDistanceGraphDiagnostics( results ) {
+	if( !Array.isArray( results ) || results.length !== 2 ) {
+		return {
+			id: 'red-blue-distance',
+			type: 'red-blue-distance',
+			available: false,
+			reason: 'requires exactly two trajectories'
+		};
+	}
+	const red = results.find( result => result.color === 'red' ) || results[0];
+	const blue = results.find( result => result.color === 'blue' ) || results.find( result => result !== red ) || results[1];
+	const redPoints = red && Array.isArray( red.points ) ? red.points : [];
+	const bluePoints = blue && Array.isArray( blue.points ) ? blue.points : [];
+	const sampleCount = Math.min( redPoints.length, bluePoints.length );
+	const samples = [];
+	for( let idx = 0; idx < sampleCount; ++idx ) {
+		samples.push( {
+			bounce: idx,
+			distance: pointDistance( redPoints[idx], bluePoints[idx] )
+		} );
+	}
+	return {
+		id: 'red-blue-distance',
+		type: 'red-blue-distance',
+		available: true,
+		xAxis: 'bounce index',
+		yAxis: 'Euclidean distance',
+		sampleCount,
+		lastBounce: sampleCount > 0 ? sampleCount - 1 : null,
+		redPointCount: redPoints.length,
+		bluePointCount: bluePoints.length,
+		redStatus: red ? red.status : null,
+		blueStatus: blue ? blue.status : null,
+		redSettings: red ? {
+			startEdge: red.requestedStartEdge,
+			edgeParameter: red.requestedEdgeParameter,
+			angleDegrees: red.requestedAngleDegrees
+		} : null,
+		blueSettings: blue ? {
+			startEdge: blue.requestedStartEdge,
+			edgeParameter: blue.requestedEdgeParameter,
+			angleDegrees: blue.requestedAngleDegrees
+		} : null,
+		samples,
+		fit: fitExponentialDistance( samples )
+	};
+}
+
+function buildStartDistanceGraphDiagnostics( results ) {
+	if( !Array.isArray( results ) || results.length === 0 ) {
+		return {
+			id: 'trajectory-start-distance',
+			type: 'trajectory-start-distance',
+			available: false,
+			reason: 'requires at least one trajectory'
+		};
+	}
+	const series = results.map( (result, idx) => {
+		const points = result && Array.isArray( result.points ) ? result.points : [];
+		const start = points[0];
+		return {
+			id: result.color || `trajectory-${idx + 1}`,
+			color: result.color || (idx === 1 ? 'blue' : 'red'),
+			label: result.color || `Trajectory ${idx + 1}`,
+			status: result.status,
+			pointCount: points.length,
+			lastBounce: points.length > 0 ? points.length - 1 : null,
+			settings: {
+				startEdge: result.requestedStartEdge,
+				edgeParameter: result.requestedEdgeParameter,
+				angleDegrees: result.requestedAngleDegrees
+			},
+			samples: start ? points.map( (point, bounce) => ( {
+				bounce,
+				distance: pointDistance( start, point )
+			} ) ) : []
+		};
+	} );
+	return {
+		id: 'trajectory-start-distance',
+		type: 'trajectory-start-distance',
+		available: true,
+		xAxis: 'bounce index',
+		yAxis: 'distance from trajectory start',
+		series
+	};
+}
+
+function buildDiagnosticsPayload( req, specs, results ) {
+	const timestamp = new Date().toISOString();
+	const runId = crypto.randomBytes( 4 ).toString( 'hex' );
+	const fileName = diagnosticsFileName( timestamp, runId );
+	const publicResults = results.map( publicResult );
+	return {
+		format: 'hatviz-diagnostics',
+		version: 1,
+		available: true,
+		runId,
+		timestamp,
+		fileName,
+		saved: false,
+		run: {
+			rootType: req.rootType,
+			level: req.level,
+			requestedBounces: req.maxBounces,
+			trajectoryCount: publicResults.length,
+			trajectories: publicResults.map( (result, idx) => ( {
+				color: result.color || (idx === 1 ? 'blue' : 'red'),
+				status: result.status,
+				pointCount: result.points.length,
+				crossingCount: result.crossings.length,
+				startEdge: specs[idx] ? specs[idx].startEdge : result.requestedStartEdge,
+				edgeParameter: specs[idx] ? specs[idx].edgeParameter : result.requestedEdgeParameter,
+				angleDegrees: specs[idx] ? specs[idx].angleDegrees : result.requestedAngleDegrees,
+				startTileId: result.startTileId,
+				currentTileId: result.currentTileId
+			} ) )
+		},
+		graphs: [
+			buildDistanceGraphDiagnostics( publicResults ),
+			buildStartDistanceGraphDiagnostics( publicResults )
+		]
+	};
+}
+
+function saveDiagnosticsPayload( payload ) {
+	ensureDiagnosticsDir();
+	const json = JSON.stringify( payload, null, 2 );
+	fs.writeFileSync( path.join( DIAGNOSTICS_DIR, payload.fileName ), json );
+	console.log( `[diagnostics] wrote ${payload.fileName}` );
+	return payload.fileName;
+}
+
+function setLatestDiagnosticsPayload( payload ) {
+	latestDiagnosticsPayloadValue = payload;
+	latestDiagnosticsJSON = JSON.stringify( payload );
+	latestDiagnosticsETagValue = `"${payload.runId}-${Buffer.byteLength( latestDiagnosticsJSON )}"`;
+}
+
+function saveLatestDiagnosticsToFolder() {
+	if( !latestDiagnosticsPayloadValue || latestDiagnosticsPayloadValue.available === false ) {
+		return { available: false, saved: false, error: 'No diagnostics are available to save.' };
+	}
+	const savedPayload = Object.assign( {}, latestDiagnosticsPayloadValue, { saved: true } );
+	const fileName = saveDiagnosticsPayload( savedPayload );
+	latestDiagnosticsPayloadValue = savedPayload;
+	latestDiagnosticsJSON = JSON.stringify( savedPayload );
+	latestDiagnosticsETagValue = `"${savedPayload.runId}-${Buffer.byteLength( latestDiagnosticsJSON )}-saved"`;
+	return {
+		available: true,
+		saved: true,
+		fileName,
+		runId: savedPayload.runId
+	};
 }
 
 function checkTrajectoryPeriodicity( result ) {
@@ -358,6 +596,7 @@ function handleRun( body ) {
 	}
 	const payloadStart = Date.now();
 	const payload = trajectoryPayload( req, specs, results, initialPatchRadius );
+	setLatestDiagnosticsPayload( buildDiagnosticsPayload( req, specs, results ) );
 	const payloadJSON = JSON.stringify( payload );
 	logTiming(
 		`[run] payload built ${req.rootType}:${req.level} ` +
@@ -420,18 +659,22 @@ function readBody( req ) {
 	} );
 }
 
-function sendJSON( res, status, value ) {
+function sendJSON( res, status, value, options ) {
+	options = options || {};
 	const start = Date.now();
 	const json = JSON.stringify( value );
 	const bytes = Buffer.byteLength( json );
-	logTiming( `[http] JSON ${status} ${formatBytes( bytes )}`, start );
+	if( !options.quiet ) {
+		logTiming( `[http] JSON ${status} ${formatBytes( bytes )}`, start );
+	}
 	res.writeHead( status, {
 		'Content-Type': 'application/json; charset=utf-8',
 		'Content-Length': bytes,
-		'Cache-Control': 'no-store',
+		'Cache-Control': options.cacheControl || 'no-store',
+		...(options.etag ? { 'ETag': options.etag } : {}),
 		'Access-Control-Allow-Origin': '*',
-		'Access-Control-Allow-Headers': 'Content-Type',
-		'Access-Control-Allow-Methods': 'POST, OPTIONS'
+		'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 	} );
 	res.end( json );
 }
@@ -439,10 +682,41 @@ function sendJSON( res, status, value ) {
 function sendOptions( res ) {
 	res.writeHead( 204, {
 		'Access-Control-Allow-Origin': '*',
-		'Access-Control-Allow-Headers': 'Content-Type',
-		'Access-Control-Allow-Methods': 'POST, OPTIONS'
+		'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 	} );
 	res.end();
+}
+
+function sendLatestDiagnostics( req, res ) {
+	if( latestDiagnosticsETagValue && req.headers['if-none-match'] === latestDiagnosticsETagValue ) {
+		res.writeHead( 304, {
+			'Cache-Control': 'no-cache',
+			'ETag': latestDiagnosticsETagValue,
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+		} );
+		res.end();
+		return;
+	}
+	if( !latestDiagnosticsPayloadValue ) {
+		sendJSON( res, 200, { available: false }, { quiet: true, cacheControl: 'no-cache' } );
+		return;
+	}
+	const start = Date.now();
+	const data = Buffer.from( latestDiagnosticsJSON, 'utf8' );
+	logTiming( `[http] diagnostics latest 200 ${formatBytes( data.length )}`, start );
+	res.writeHead( 200, {
+		'Content-Type': 'application/json; charset=utf-8',
+		'Content-Length': data.length,
+		'Cache-Control': 'no-cache',
+		'ETag': latestDiagnosticsETagValue,
+		'Access-Control-Allow-Origin': '*',
+		'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+	} );
+	res.end( data );
 }
 
 function contentType( file ) {
@@ -481,8 +755,18 @@ function serveStatic( req, res ) {
 
 const server = http.createServer( async (req, res) => {
 	try {
+		const url = new URL( req.url, `http://${HOST}:${PORT}` );
 		if( req.method === 'OPTIONS' ) {
 			sendOptions( res );
+			return;
+		}
+		if( req.method === 'GET' && url.pathname === '/api/diagnostics/latest' ) {
+			sendLatestDiagnostics( req, res );
+			return;
+		}
+		if( req.method === 'POST' && url.pathname === '/api/diagnostics/save-latest' ) {
+			console.log( `[http] POST ${url.pathname}` );
+			sendJSON( res, 200, saveLatestDiagnosticsToFolder() );
 			return;
 		}
 		if( req.method === 'POST' && req.url === '/api/trajectory/run' ) {
