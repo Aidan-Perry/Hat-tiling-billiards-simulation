@@ -66,6 +66,19 @@
 			gap: 8px;
 			flex-wrap: wrap;
 		}
+		.tabs {
+			display: flex;
+			gap: 6px;
+			margin: 0 0 16px;
+		}
+		.tab-button[aria-selected="true"] {
+			background: #1f2328;
+			border-color: #1f2328;
+			color: #fff;
+		}
+		.tab-panel[hidden] {
+			display: none;
+		}
 		.card {
 			background: #fff;
 			border: 1px solid #d9dee7;
@@ -73,7 +86,7 @@
 			padding: 16px;
 			box-shadow: 0 1px 2px rgba(31, 35, 40, 0.05);
 		}
-		#graphs {
+		#graphs, #sequences {
 			display: grid;
 			gap: 16px;
 		}
@@ -105,6 +118,40 @@
 			display: inline-block;
 			height: 10px;
 			width: 10px;
+		}
+		.level-controls {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 8px;
+			margin-top: 10px;
+		}
+		.token-stream {
+			background: #f6f7f9;
+			border: 1px solid #d9dee7;
+			border-radius: 6px;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+			font-size: 12px;
+			line-height: 1.45;
+			max-height: 210px;
+			overflow: auto;
+			padding: 10px;
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
+		.sequence-grid {
+			display: grid;
+			gap: 10px;
+		}
+		.sequence-item {
+			border: 1px solid #eef0f3;
+			border-radius: 6px;
+			padding: 12px;
+		}
+		.sequence-title {
+			align-items: center;
+			display: flex;
+			gap: 8px;
+			justify-content: space-between;
 		}
 		canvas {
 			display: block;
@@ -167,7 +214,16 @@
 				<button id="save" type="button" disabled>Save JSON</button>
 			</div>
 		</header>
-		<section id="graphs"></section>
+		<nav class="tabs" aria-label="Diagnostics views">
+			<button id="graphs-tab" class="tab-button" type="button" aria-selected="true">Graphs</button>
+			<button id="sequences-tab" class="tab-button" type="button" aria-selected="false">Sequences</button>
+		</nav>
+		<section id="graphs-panel" class="tab-panel">
+			<section id="graphs"></section>
+		</section>
+		<section id="sequences-panel" class="tab-panel" hidden>
+			<section id="sequences"></section>
+		</section>
 	</main>
 	<script src="diagnostics.js"></script>
 </body>

@@ -3,12 +3,18 @@
 
 	const statusEl = document.getElementById( 'status' );
 	const graphsEl = document.getElementById( 'graphs' );
+	const sequencesEl = document.getElementById( 'sequences' );
 	const refreshButton = document.getElementById( 'refresh' );
 	const saveButton = document.getElementById( 'save' );
+	const graphsTab = document.getElementById( 'graphs-tab' );
+	const sequencesTab = document.getElementById( 'sequences-tab' );
+	const graphsPanel = document.getElementById( 'graphs-panel' );
+	const sequencesPanel = document.getElementById( 'sequences-panel' );
 	const pollMs = 10000;
 	let latestETag = null;
 	let latestPayload = null;
 	const graphVisibility = new Map();
+	const selectedMetatileLevels = new Set();
 
 	function fmt( value, digits ) {
 		if( value == null || !Number.isFinite( Number( value ) ) ) {
@@ -46,6 +52,134 @@
 		valueEl.textContent = value == null ? 'n/a' : String( value );
 		row.append( labelEl, valueEl );
 		return row;
+	}
+
+	function setActiveTab( name ) {
+		const showGraphs = name === 'graphs';
+		graphsPanel.hidden = !showGraphs;
+		sequencesPanel.hidden = showGraphs;
+		graphsTab.setAttribute( 'aria-selected', showGraphs ? 'true' : 'false' );
+		sequencesTab.setAttribute( 'aria-selected', showGraphs ? 'false' : 'true' );
+	}
+
+	function tokenText( tokens ) {
+		return (tokens || []).join( ' ' );
+	}
+
+	function sequenceCardTitle( title, count ) {
+		const row = div( 'sequence-title' );
+		const heading = document.createElement( 'h2' );
+		heading.textContent = title;
+		const countEl = document.createElement( 'span' );
+		countEl.className = 'status-line';
+		countEl.textContent = `${count || 0} hits`;
+		row.append( heading, countEl );
+		return row;
+	}
+
+	function renderTokenSequence( container, sequence ) {
+		container.appendChild( sequenceCardTitle( sequence.label || sequence.id, sequence.count ) );
+		const meta = div( 'meta-grid' );
+		if( sequence.type === 'hat-edge' ) {
+			meta.appendChild( metaRow( 'Type', 'hat side index' ) );
+		} else {
+			meta.appendChild( metaRow( 'Type', `metatile L${sequence.metatileLevel}` ) );
+			meta.appendChild( metaRow( 'Outlines', sequence.outlineCount ) );
+		}
+		container.appendChild( meta );
+		const stream = div( 'token-stream', tokenText( sequence.tokens ) || 'empty' );
+		container.appendChild( stream );
+	}
+
+	function renderHatSequences( symbolic ) {
+		const card = div( 'card' );
+		const title = document.createElement( 'h2' );
+		title.textContent = 'Hat Cutting Sequence';
+		card.appendChild( title );
+		const grid = div( 'sequence-grid' );
+		for( const sequence of symbolic.hatSequences || [] ) {
+			const item = div( 'sequence-item' );
+			renderTokenSequence( item, sequence );
+			grid.appendChild( item );
+		}
+		if( grid.childNodes.length === 0 ) {
+			grid.appendChild( div( 'empty', 'No hat crossings in the latest run.' ) );
+		}
+		card.appendChild( grid );
+		sequencesEl.appendChild( card );
+	}
+
+	function renderMetatileControls( run, symbolic ) {
+		const card = div( 'card' );
+		const title = document.createElement( 'h2' );
+		title.textContent = 'Metatile Cutting Sequences';
+		card.appendChild( title );
+		const maxLevel = Math.max( 1, Math.floor(
+			(symbolic.metatileSequences && symbolic.metatileSequences.maxLevel) ||
+			(run && run.level) || 1 ) );
+		const controls = div( 'level-controls' );
+		for( let level = 1; level <= maxLevel; ++level ) {
+			const label = document.createElement( 'label' );
+			label.className = 'series-toggle';
+			const checkbox = document.createElement( 'input' );
+			checkbox.type = 'checkbox';
+			checkbox.value = String( level );
+			checkbox.checked = selectedMetatileLevels.has( level );
+			checkbox.addEventListener( 'change', () => {
+				if( checkbox.checked ) {
+					selectedMetatileLevels.add( level );
+				} else {
+					selectedMetatileLevels.delete( level );
+				}
+			} );
+			const text = document.createElement( 'span' );
+			text.textContent = `L${level}`;
+			label.append( checkbox, text );
+			controls.appendChild( label );
+		}
+		const loadButton = document.createElement( 'button' );
+		loadButton.type = 'button';
+		loadButton.textContent = 'Load Selected';
+		loadButton.addEventListener( 'click', loadSelectedMetatileSequences );
+		controls.appendChild( loadButton );
+		card.appendChild( controls );
+		sequencesEl.appendChild( card );
+	}
+
+	function renderMetatileSequences( symbolic ) {
+		const metatile = symbolic.metatileSequences || {};
+		for( const levelPayload of metatile.levels || [] ) {
+			const card = div( 'card' );
+			const title = document.createElement( 'h2' );
+			title.textContent = `Metatile L${levelPayload.level}`;
+			card.appendChild( title );
+			const meta = div( 'meta-grid' );
+			meta.appendChild( metaRow( 'Outlines', levelPayload.outlineCount ) );
+			card.appendChild( meta );
+			const grid = div( 'sequence-grid' );
+			for( const sequence of levelPayload.sequences || [] ) {
+				const item = div( 'sequence-item' );
+				renderTokenSequence( item, sequence );
+				grid.appendChild( item );
+			}
+			if( grid.childNodes.length === 0 ) {
+				grid.appendChild( div( 'empty', 'No metatile sequence loaded for this level.' ) );
+			}
+			card.appendChild( grid );
+			sequencesEl.appendChild( card );
+		}
+	}
+
+	function renderSequences( payload ) {
+		clear( sequencesEl );
+		if( !payload || payload.available === false ) {
+			sequencesEl.appendChild( div( 'card empty', 'Run a server-backed trajectory to create diagnostics.' ) );
+			return;
+		}
+		const symbolic = payload.symbolic || {};
+		renderHatSequences( symbolic );
+		renderMetatileControls( payload.run || {}, symbolic );
+		renderMetatileSequences( symbolic );
 	}
 
 	function niceTickStep( range, targetTicks ) {
@@ -478,6 +612,7 @@
 			statusEl.textContent = 'No diagnostics are available yet.';
 			saveButton.disabled = true;
 			graphsEl.appendChild( div( 'card empty', 'Run a server-backed trajectory to create diagnostics.' ) );
+			renderSequences( payload );
 			return;
 		}
 		statusEl.textContent = payload.saved ?
@@ -497,6 +632,7 @@
 				card.appendChild( div( 'empty', 'No data for this graph in the latest run.' ) );
 			}
 		}
+		renderSequences( payload );
 	}
 
 	async function loadLatest( options ) {
@@ -557,8 +693,52 @@
 		}
 	}
 
+	async function loadSelectedMetatileSequences() {
+		if( !latestPayload || latestPayload.available === false ) {
+			return;
+		}
+		const levels = [...selectedMetatileLevels].sort( (a, b) => a - b );
+		if( levels.length === 0 ) {
+			latestPayload.symbolic = latestPayload.symbolic || {};
+			latestPayload.symbolic.metatileSequences = {
+				available: true,
+				maxLevel: latestPayload.run ? latestPayload.run.level : 1,
+				levels: []
+			};
+			renderSequences( latestPayload );
+			return;
+		}
+		statusEl.textContent = `Loading metatile L${levels.join( ', L' )} sequences...`;
+		try {
+			const response = await fetch( '/api/diagnostics/metatile-sequence', {
+				method: 'POST',
+				cache: 'no-store',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify( { levels } )
+			} );
+			if( !response.ok ) {
+				throw new Error( `HTTP ${response.status}` );
+			}
+			const result = await response.json();
+			if( result.available === false ) {
+				throw new Error( result.error || 'Metatile sequences are unavailable.' );
+			}
+			latestPayload.symbolic = latestPayload.symbolic || {};
+			latestPayload.symbolic.metatileSequences = result;
+			latestETag = null;
+			statusEl.classList.remove( 'error' );
+			statusEl.textContent = `Loaded metatile L${levels.join( ', L' )} sequences`;
+			renderSequences( latestPayload );
+		} catch( err ) {
+			statusEl.textContent = `Could not load metatile sequences: ${err.message || String( err )}`;
+			statusEl.classList.add( 'error' );
+		}
+	}
+
 	refreshButton.addEventListener( 'click', () => loadLatest( { force: true } ) );
 	saveButton.addEventListener( 'click', saveLatestDiagnostics );
+	graphsTab.addEventListener( 'click', () => setActiveTab( 'graphs' ) );
+	sequencesTab.addEventListener( 'click', () => setActiveTab( 'sequences' ) );
 	window.addEventListener( 'resize', () => {
 		if( latestPayload ) {
 			renderPayload( latestPayload );

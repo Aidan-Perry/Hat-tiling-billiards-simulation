@@ -12,6 +12,7 @@ const tilingCache = new Map();
 let latestDiagnosticsPayloadValue = null;
 let latestDiagnosticsJSON = '';
 let latestDiagnosticsETagValue = null;
+let latestDiagnosticsSourceValue = null;
 
 function logTiming( label, startTime ) {
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed( 2 );
@@ -155,6 +156,22 @@ function cacheTrajectoryMetadata( result ) {
 
 function pointDistance( a, b ) {
 	return Math.hypot( a.x - b.x, a.y - b.y );
+}
+
+function pointSub( a, b ) {
+	return { x: a.x - b.x, y: a.y - b.y };
+}
+
+function pointAdd( a, b ) {
+	return { x: a.x + b.x, y: a.y + b.y };
+}
+
+function pointScale( a, s ) {
+	return { x: a.x * s, y: a.y * s };
+}
+
+function cross2( a, b ) {
+	return a.x * b.y - a.y * b.x;
 }
 
 function ensureDiagnosticsDir() {
@@ -322,6 +339,187 @@ function buildStartDistanceGraphDiagnostics( results ) {
 	};
 }
 
+function buildHatCuttingSequenceDiagnostics( results ) {
+	return (results || []).map( (result, idx) => {
+		const entries = (result.crossings || []).map( (crossing, crossingIdx) => ( {
+			bounce: crossingIdx + 1,
+			symbol: String( crossing.edgeIndex ),
+			edgeIndex: crossing.edgeIndex,
+			fromTileId: crossing.fromTileId,
+			toTileId: crossing.toTileId == null ? null : crossing.toTileId,
+			nextEdgeIndex: crossing.nextEdgeIndex == null ? null : crossing.nextEdgeIndex,
+			u: crossing.u
+		} ) );
+		return {
+			id: result.color || `trajectory-${idx + 1}`,
+			color: result.color || (idx === 1 ? 'blue' : 'red'),
+			label: result.color || `Trajectory ${idx + 1}`,
+			type: 'hat-edge',
+			count: entries.length,
+			tokens: entries.map( entry => entry.symbol ),
+			entries
+		};
+	} );
+}
+
+function inferMetatileLabel( geom ) {
+	const sides = geom && geom.shape ? geom.shape.length : 0;
+	if( sides === 6 ) return 'H';
+	if( sides === 5 ) return 'F';
+	if( sides === 4 ) return 'P';
+	if( sides === 3 ) return 'T';
+	return 'M';
+}
+
+function transformedShape( shape, T ) {
+	return (shape || []).map( point => ctx.transPt ? ctx.transPt( T, point ) : transPt( T, point ) );
+}
+
+function flattenMetatileOutlinesAtDepth( geom, T, depth, out ) {
+	if( !geom || !geom.children ) {
+		return;
+	}
+	if( depth > 0 ) {
+		for( const child of geom.children ) {
+			flattenMetatileOutlinesAtDepth( child.geom, ctx.mul( T, child.T ), depth - 1, out );
+		}
+		return;
+	}
+	const polygon = geom.shape.map( point => ctx.transPt( T, point ) );
+	out.push( {
+		id: out.length,
+		label: inferMetatileLabel( geom ),
+		polygon,
+		edges: polygon.map( (point, idx) => ( {
+			index: idx,
+			a: point,
+			b: polygon[(idx + 1) % polygon.length]
+		} ) )
+	} );
+}
+
+function metatileOutlinesForLevel( tiling, metatileLevel ) {
+	const generatedLevel = Math.max( 1, Math.floor( tiling.level || 1 ) );
+	const level = Math.max( 1, Math.min( generatedLevel, Math.floor( metatileLevel ) ) );
+	const depth = generatedLevel - level + 1;
+	const outlines = [];
+	flattenMetatileOutlinesAtDepth( tiling.root, tiling.rootTransform || ctx.ident, depth, outlines );
+	return outlines;
+}
+
+function segmentIntersection( p, q, a, b, eps ) {
+	const r = pointSub( q, p );
+	const s = pointSub( b, a );
+	const denom = cross2( r, s );
+	if( Math.abs( denom ) <= eps ) {
+		return null;
+	}
+	const ap = pointSub( a, p );
+	const t = cross2( ap, s ) / denom;
+	const u = cross2( ap, r ) / denom;
+	if( t < eps || t > 1 - eps || u < -eps || u > 1 + eps ) {
+		return null;
+	}
+	return {
+		t,
+		u,
+		point: pointAdd( p, pointScale( r, t ) )
+	};
+}
+
+function buildMetatileSequenceForResult( result, outlines, metatileLevel ) {
+	const points = result.points || [];
+	const eps = result.tiling && result.tiling.tolerances ?
+		result.tiling.tolerances.EPS * 1000 : 1e-7;
+	const entries = [];
+	for( let idx = 1; idx < points.length; ++idx ) {
+		const p = points[idx - 1];
+		const q = points[idx];
+		const hits = [];
+		for( const outline of outlines ) {
+			for( const edge of outline.edges ) {
+				const hit = segmentIntersection( p, q, edge.a, edge.b, eps );
+				if( hit ) {
+					hits.push( {
+						segmentIndex: idx,
+						t: hit.t,
+						point: hit.point,
+						metatileId: outline.id,
+						metatileLabel: outline.label,
+						sideIndex: edge.index,
+						symbol: `${outline.label}${edge.index}`
+					} );
+				}
+			}
+		}
+		hits.sort( (a, b) => a.t - b.t || a.metatileId - b.metatileId || a.sideIndex - b.sideIndex );
+		for( const hit of hits ) {
+			const last = entries[entries.length - 1];
+			if( last && last.segmentIndex === hit.segmentIndex && Math.abs( last.t - hit.t ) <= eps * 10 ) {
+				const symbols = new Set( last.symbol.split( '|' ) );
+				symbols.add( hit.symbol );
+				last.symbol = [...symbols].sort().join( '|' );
+				last.candidates.push( {
+					metatileId: hit.metatileId,
+					metatileLabel: hit.metatileLabel,
+					sideIndex: hit.sideIndex
+				} );
+				continue;
+			}
+			entries.push( {
+				bounce: idx,
+				segmentIndex: hit.segmentIndex,
+				t: hit.t,
+				symbol: hit.symbol,
+				point: clonePoint( hit.point ),
+				candidates: [{
+					metatileId: hit.metatileId,
+					metatileLabel: hit.metatileLabel,
+					sideIndex: hit.sideIndex
+				}]
+			} );
+		}
+	}
+	return {
+		id: result.color || 'trajectory',
+		color: result.color || 'red',
+		label: result.color || 'trajectory',
+		type: 'metatile-boundary',
+		metatileLevel,
+		outlineCount: outlines.length,
+		count: entries.length,
+		tokens: entries.map( entry => entry.symbol ),
+		entries
+	};
+}
+
+function buildMetatileCuttingSequenceDiagnostics( levels ) {
+	if( !latestDiagnosticsSourceValue || !latestDiagnosticsSourceValue.results || latestDiagnosticsSourceValue.results.length === 0 ) {
+		return { available: false, levels: [], error: 'No trajectory diagnostics are available.' };
+	}
+	const results = latestDiagnosticsSourceValue.results;
+	const tiling = results[0].tiling;
+	const maxLevel = Math.max( 1, Math.floor( tiling.level || 1 ) );
+	const requestedLevels = [...new Set( (levels || []).map( level =>
+		Math.max( 1, Math.min( maxLevel, Math.floor( level ) ) ) ) )]
+		.filter( Number.isFinite )
+		.sort( (a, b) => a - b );
+	const levelPayloads = requestedLevels.map( level => {
+		const outlines = metatileOutlinesForLevel( tiling, level );
+		return {
+			level,
+			outlineCount: outlines.length,
+			sequences: results.map( result =>
+				buildMetatileSequenceForResult( result, outlines, level ) )
+		};
+	} );
+	return {
+		available: true,
+		maxLevel,
+		levels: levelPayloads
+	};
+}
+
 function buildDiagnosticsPayload( req, specs, results ) {
 	const timestamp = new Date().toISOString();
 	const runId = crypto.randomBytes( 4 ).toString( 'hex' );
@@ -352,6 +550,14 @@ function buildDiagnosticsPayload( req, specs, results ) {
 				currentTileId: result.currentTileId
 			} ) )
 		},
+		symbolic: {
+			hatSequences: buildHatCuttingSequenceDiagnostics( publicResults ),
+			metatileSequences: {
+				available: true,
+				maxLevel: req.level,
+				levels: []
+			}
+		},
 		graphs: [
 			buildDistanceGraphDiagnostics( publicResults ),
 			buildStartDistanceGraphDiagnostics( publicResults )
@@ -367,10 +573,32 @@ function saveDiagnosticsPayload( payload ) {
 	return payload.fileName;
 }
 
-function setLatestDiagnosticsPayload( payload ) {
+function setLatestDiagnosticsPayload( payload, source ) {
 	latestDiagnosticsPayloadValue = payload;
+	latestDiagnosticsSourceValue = source || null;
 	latestDiagnosticsJSON = JSON.stringify( payload );
 	latestDiagnosticsETagValue = `"${payload.runId}-${Buffer.byteLength( latestDiagnosticsJSON )}"`;
+}
+
+function updateLatestDiagnosticsJSON() {
+	if( !latestDiagnosticsPayloadValue ) {
+		latestDiagnosticsJSON = '';
+		latestDiagnosticsETagValue = null;
+		return;
+	}
+	latestDiagnosticsJSON = JSON.stringify( latestDiagnosticsPayloadValue );
+	latestDiagnosticsETagValue = `"${latestDiagnosticsPayloadValue.runId}-${Buffer.byteLength( latestDiagnosticsJSON )}-${Date.now()}"`;
+}
+
+function attachMetatileCuttingSequences( levels ) {
+	if( !latestDiagnosticsPayloadValue || latestDiagnosticsPayloadValue.available === false ) {
+		return { available: false, error: 'No diagnostics are available.' };
+	}
+	const metatileSequences = buildMetatileCuttingSequenceDiagnostics( levels );
+	latestDiagnosticsPayloadValue.symbolic = latestDiagnosticsPayloadValue.symbolic || {};
+	latestDiagnosticsPayloadValue.symbolic.metatileSequences = metatileSequences;
+	updateLatestDiagnosticsJSON();
+	return metatileSequences;
 }
 
 function saveLatestDiagnosticsToFolder() {
@@ -596,7 +824,7 @@ function handleRun( body ) {
 	}
 	const payloadStart = Date.now();
 	const payload = trajectoryPayload( req, specs, results, initialPatchRadius );
-	setLatestDiagnosticsPayload( buildDiagnosticsPayload( req, specs, results ) );
+	setLatestDiagnosticsPayload( buildDiagnosticsPayload( req, specs, results ), { req, specs, results } );
 	const payloadJSON = JSON.stringify( payload );
 	logTiming(
 		`[run] payload built ${req.rootType}:${req.level} ` +
@@ -767,6 +995,12 @@ const server = http.createServer( async (req, res) => {
 		if( req.method === 'POST' && url.pathname === '/api/diagnostics/save-latest' ) {
 			console.log( `[http] POST ${url.pathname}` );
 			sendJSON( res, 200, saveLatestDiagnosticsToFolder() );
+			return;
+		}
+		if( req.method === 'POST' && url.pathname === '/api/diagnostics/metatile-sequence' ) {
+			console.log( `[http] POST ${url.pathname}` );
+			const body = await readBody( req );
+			sendJSON( res, 200, attachMetatileCuttingSequences( body.levels || [] ) );
 			return;
 		}
 		if( req.method === 'POST' && req.url === '/api/trajectory/run' ) {
