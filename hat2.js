@@ -27,6 +27,7 @@ let scale_button;
 let draw_hats;
 let metatile_level_buttons = [];
 let radio;
+let start_tile_input;
 let start_edge_input;
 let edge_parameter_input;
 let angle_input;
@@ -705,9 +706,37 @@ function readNumber( input, fallback )
 	return Number.isFinite( value ) ? value : fallback;
 }
 
+function readOptionalInteger( input )
+{
+	const raw = input ? String( input.value() ).trim() : '';
+	if( raw === '' ) {
+		return null;
+	}
+	const value = Number( raw );
+	return Number.isInteger( value ) ? value : null;
+}
+
 function clampNumber( value, lo, hi )
 {
 	return Math.max( lo, Math.min( hi, value ) );
+}
+
+function selectedStartTileId( tiling )
+{
+	if( !tiling ) {
+		return null;
+	}
+	const requested = readOptionalInteger( start_tile_input );
+	if( requested != null && requested >= 0 && tiling.tiles[requested] ) {
+		return requested;
+	}
+	return tiling.centralTileId;
+}
+
+function startTileSelectionLabel()
+{
+	const requested = readOptionalInteger( start_tile_input );
+	return requested == null ? 'centralTileId' : 'tileId';
 }
 
 function trajectoryControlsForColor( colorName )
@@ -926,6 +955,7 @@ async function runSimulatorTrajectory()
 		const payload = await postTrajectoryJSON( '/api/trajectory/run', {
 			rootType: currentRootType(),
 			level: requestedMaxLevel,
+			startTileId: readOptionalInteger( start_tile_input ),
 			startEdge: trajectorySpecs[0].startEdge,
 			edgeParameter: trajectorySpecs[0].edgeParameter,
 			angleDegrees: trajectorySpecs[0].angleDegrees,
@@ -950,10 +980,11 @@ async function runSimulatorTrajectory()
 		rootType: currentRootType(),
 		level: requestedMaxLevel
 	} );
+	const startTileId = selectedStartTileId( runTiling );
 	const localResults = [];
 	for( const spec of trajectorySpecs ) {
 		const result = HatBilliards.runTrajectory( runTiling, {
-			startTileId: runTiling.centralTileId,
+			startTileId,
 			startEdge: spec.startEdge,
 			edgeParameter: spec.edgeParameter,
 			angleDegrees: spec.angleDegrees,
@@ -1092,7 +1123,7 @@ function startPreviewState( colorName )
 	if( !simulator_tiling ) {
 		return null;
 	}
-	const tileId = simulator_tiling.centralTileId;
+	const tileId = selectedStartTileId( simulator_tiling );
 	const tile = simulator_tiling.tiles[tileId];
 	if( !tile ) {
 		return null;
@@ -1229,9 +1260,10 @@ function buildTrajectoryJSONPayload()
 	const display = getSimulatorDisplayPatch();
 	const results = activeTrajectoryResults();
 	const serializedResults = results.map( serializeResultForJSON );
+	const startTileSelection = startTileSelectionLabel();
 	const trajectorySpecs = results.map( result => ( {
 		color: result.color || 'red',
-		startTileSelection: 'centralTileId',
+		startTileSelection,
 		startTileId: result.startTileId,
 		startEdge: result.requestedStartEdge,
 		edgeParameter: result.requestedEdgeParameter == null ?
@@ -1252,7 +1284,7 @@ function buildTrajectoryJSONPayload()
 			patchRadius: Math.max( 0, Math.floor( readNumber( patch_radius_input, 1 ) ) )
 		},
 		trajectorySpec: {
-			startTileSelection: 'centralTileId',
+			startTileSelection,
 			startTileId: simulator_result.startTileId,
 			startEdge: simulator_result.requestedStartEdge,
 			edgeParameter: trajectorySpecs[0].edgeParameter,
@@ -1492,6 +1524,9 @@ function applyTrajectoryJSONPayload( payload, options )
 		config.patchRadius == null ? readNumber( patch_radius_input, 1 ) : config.patchRadius ) );
 
 	radio.selected( rootType );
+	const loadedStartTileId = spec.startTileId == null ? result.startTileId : spec.startTileId;
+	start_tile_input.value( spec.startTileSelection === 'tileId' && loadedStartTileId != null ?
+		String( loadedStartTileId ) : '' );
 	start_edge_input.value( String( specs[0].startEdge == null ? result.requestedStartEdge || 0 : specs[0].startEdge ) );
 	edge_parameter_input.value( String( specs[0].edgeParameter == null ? 0.5 : specs[0].edgeParameter ) );
 	angle_input.value( String( angleDegreesForLoadedTrajectory( specs[0], result, 60 ) ) );
@@ -2160,6 +2195,9 @@ function setup() {
 	setButtonActive( draw_hats, true );
 	box_height += 10;
 
+	start_tile_input = numericInput( "Start tile", '', 44, {
+		min: 0, step: 1
+	} );
 	start_edge_input = numericInput( "Start edge", 0, 44, {
 		min: 0, max: 12, step: 1
 	} );

@@ -13,6 +13,7 @@ let latestDiagnosticsPayloadValue = null;
 let latestDiagnosticsJSON = '';
 let latestDiagnosticsETagValue = null;
 let latestDiagnosticsSourceValue = null;
+let latestMetatileAnalysisCache = null;
 
 function logTiming( label, startTime ) {
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed( 2 );
@@ -172,6 +173,132 @@ function pointScale( a, s ) {
 
 function cross2( a, b ) {
 	return a.x * b.y - a.y * b.x;
+}
+
+function dot2( a, b ) {
+	return a.x * b.x + a.y * b.y;
+}
+
+function pointLerp( a, b, t ) {
+	return {
+		x: a.x + (b.x - a.x) * t,
+		y: a.y + (b.y - a.y) * t
+	};
+}
+
+function pointBounds( points, eps ) {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for( const point of points ) {
+		minX = Math.min( minX, point.x );
+		minY = Math.min( minY, point.y );
+		maxX = Math.max( maxX, point.x );
+		maxY = Math.max( maxY, point.y );
+	}
+	return {
+		minX: minX - eps,
+		minY: minY - eps,
+		maxX: maxX + eps,
+		maxY: maxY + eps
+	};
+}
+
+function boundsOverlap( a, b ) {
+	return a.minX <= b.maxX && a.maxX >= b.minX &&
+		a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
+function spatialCellKey( ix, iy ) {
+	return `${ix}:${iy}`;
+}
+
+function addToSpatialBuckets( buckets, bounds, cellSize, value ) {
+	const minCellX = Math.floor( bounds.minX / cellSize );
+	const minCellY = Math.floor( bounds.minY / cellSize );
+	const maxCellX = Math.floor( bounds.maxX / cellSize );
+	const maxCellY = Math.floor( bounds.maxY / cellSize );
+	for( let ix = minCellX; ix <= maxCellX; ++ix ) {
+		for( let iy = minCellY; iy <= maxCellY; ++iy ) {
+			const key = spatialCellKey( ix, iy );
+			if( !buckets.has( key ) ) {
+				buckets.set( key, [] );
+			}
+			buckets.get( key ).push( value );
+		}
+	}
+}
+
+function spatialCandidatesForBounds( index, bounds ) {
+	if( !index || !index.buckets || !(index.cellSize > 0) ) {
+		return [];
+	}
+	const seen = new Set();
+	const result = [];
+	const minCellX = Math.floor( bounds.minX / index.cellSize );
+	const minCellY = Math.floor( bounds.minY / index.cellSize );
+	const maxCellX = Math.floor( bounds.maxX / index.cellSize );
+	const maxCellY = Math.floor( bounds.maxY / index.cellSize );
+	for( let ix = minCellX; ix <= maxCellX; ++ix ) {
+		for( let iy = minCellY; iy <= maxCellY; ++iy ) {
+			const values = index.buckets.get( spatialCellKey( ix, iy ) ) || [];
+			for( const value of values ) {
+				if( seen.has( value ) ) {
+					continue;
+				}
+				seen.add( value );
+				result.push( value );
+			}
+		}
+	}
+	return result;
+}
+
+function spatialCandidatesForPoint( index, point ) {
+	if( !index || !index.buckets || !(index.cellSize > 0) ) {
+		return [];
+	}
+	return index.buckets.get(
+		spatialCellKey(
+			Math.floor( point.x / index.cellSize ),
+			Math.floor( point.y / index.cellSize ) ) ) || [];
+}
+
+function pointInPolygon( p, poly, eps ) {
+	let inside = false;
+	for( let i = 0, j = poly.length - 1; i < poly.length; j = i++ ) {
+		const a = poly[i];
+		const b = poly[j];
+		const ab = pointSub( b, a );
+		const ap = pointSub( p, a );
+		const onLine = Math.abs( cross2( ab, ap ) ) <= eps &&
+			dot2( ap, pointSub( p, b ) ) <= eps;
+		if( onLine ) {
+			return true;
+		}
+		const intersectRay = ((a.y > p.y) !== (b.y > p.y)) &&
+			(p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x);
+		if( intersectRay ) {
+			inside = !inside;
+		}
+	}
+	return inside;
+}
+
+function roundedPointKey( point, eps ) {
+	return `${Math.round( point.x / eps )}:${Math.round( point.y / eps )}`;
+}
+
+function canonicalUndirectedEdgeKey( a, b, eps ) {
+	const ak = roundedPointKey( a, eps );
+	const bk = roundedPointKey( b, eps );
+	return ak < bk ? `${ak}|${bk}` : `${bk}|${ak}`;
+}
+
+function sameUndirectedEdge( e1, e2, eps ) {
+	return (pointDistance( e1.a, e2.a ) <= eps && pointDistance( e1.b, e2.b ) <= eps) ||
+		(pointDistance( e1.a, e2.b ) <= eps && pointDistance( e1.b, e2.a ) <= eps);
 }
 
 function ensureDiagnosticsDir() {
@@ -339,11 +466,106 @@ function buildStartDistanceGraphDiagnostics( results ) {
 	};
 }
 
+function buildVertexClearanceSeries( results, options ) {
+	options = options || {};
+	const sorted = options.sorted === true;
+	return results.map( (result, idx) => {
+		const crossings = result && Array.isArray( result.crossings ) ? result.crossings : [];
+		const values = [];
+		let skippedMissingEdgeCount = 0;
+		for( let crossingIdx = 0; crossingIdx < crossings.length; ++crossingIdx ) {
+			const crossing = crossings[crossingIdx];
+			const tile = result.tiling && crossing ? result.tiling.tiles[crossing.fromTileId] : null;
+			const edge = tile && crossing.edgeIndex != null ? tile.edges[crossing.edgeIndex] : null;
+			if( !edge || !edge.a || !edge.b || !crossing.point ) {
+				skippedMissingEdgeCount += 1;
+				continue;
+			}
+			const distance = Math.min(
+				pointDistance( crossing.point, edge.a ),
+				pointDistance( crossing.point, edge.b )
+			);
+			if( Number.isFinite( distance ) ) {
+				values.push( {
+					bounce: crossingIdx + 1,
+					distance
+				} );
+			} else {
+				skippedMissingEdgeCount += 1;
+			}
+		}
+		const samples = sorted ?
+			values
+				.map( item => item.distance )
+				.sort( (a, b) => b - a )
+				.map( (distance, rank) => ( {
+					bounce: rank,
+					distance
+				} ) ) :
+			values;
+		return {
+			id: result.color || `trajectory-${idx + 1}`,
+			color: result.color || (idx === 1 ? 'blue' : 'red'),
+			label: result.color || `Trajectory ${idx + 1}`,
+			status: result.status,
+			crossingCount: crossings.length,
+			sampleCount: samples.length,
+			skippedMissingEdgeCount,
+			lastBounce: samples.length > 0 ? samples[samples.length - 1].bounce : null,
+			lastRank: samples.length > 0 ? samples.length - 1 : null,
+			settings: {
+				startEdge: result.requestedStartEdge,
+				edgeParameter: result.requestedEdgeParameter,
+				angleDegrees: result.requestedAngleDegrees
+			},
+			samples
+		};
+	} );
+}
+
+function buildSortedVertexClearanceGraphDiagnostics( results ) {
+	if( !Array.isArray( results ) || results.length === 0 ) {
+		return {
+			id: 'sorted-crossing-vertex-clearance',
+			type: 'sorted-crossing-vertex-clearance',
+			available: false,
+			reason: 'requires at least one trajectory'
+		};
+	}
+	return {
+		id: 'sorted-crossing-vertex-clearance',
+		type: 'sorted-crossing-vertex-clearance',
+		available: true,
+		xAxis: 'sorted crossing rank',
+		yAxis: 'minimum distance to side vertex',
+		series: buildVertexClearanceSeries( results, { sorted: true } )
+	};
+}
+
+function buildUnsortedVertexClearanceGraphDiagnostics( results ) {
+	if( !Array.isArray( results ) || results.length === 0 ) {
+		return {
+			id: 'crossing-vertex-clearance',
+			type: 'crossing-vertex-clearance',
+			available: false,
+			reason: 'requires at least one trajectory'
+		};
+	}
+	return {
+		id: 'crossing-vertex-clearance',
+		type: 'crossing-vertex-clearance',
+		available: true,
+		xAxis: 'bounce index',
+		yAxis: 'minimum distance to side vertex',
+		series: buildVertexClearanceSeries( results, { sorted: false } )
+	};
+}
+
 function buildHatCuttingSequenceDiagnostics( results ) {
 	return (results || []).map( (result, idx) => {
 		const entries = (result.crossings || []).map( (crossing, crossingIdx) => ( {
 			bounce: crossingIdx + 1,
-			symbol: String( crossing.edgeIndex ),
+			symbol: `${crossing.edgeIndex}->${crossing.nextEdgeIndex == null ? '?' : crossing.nextEdgeIndex}`,
 			edgeIndex: crossing.edgeIndex,
 			fromTileId: crossing.fromTileId,
 			toTileId: crossing.toTileId == null ? null : crossing.toTileId,
@@ -407,7 +629,108 @@ function metatileOutlinesForLevel( tiling, metatileLevel ) {
 	return outlines;
 }
 
-function segmentIntersection( p, q, a, b, eps ) {
+function buildMetatileAnalysisForLevel( tiling, metatileLevel ) {
+	const outlines = metatileOutlinesForLevel( tiling, metatileLevel );
+	const tol = tiling && tiling.tolerances ? tiling.tolerances : ctx.HatBilliards.tolerances();
+	const eps = tol.EPS * 1000;
+	const keyEps = tol.EPS * 100;
+	const cellSize = Math.max( tol.edgeLength || 1, eps * 100 );
+	const boundaryEdges = [];
+	const edgeBuckets = new Map();
+	const polygonBuckets = new Map();
+	const sharedEdgeBuckets = new Map();
+
+	for( const outline of outlines ) {
+		outline.bounds = pointBounds( outline.polygon, eps );
+		addToSpatialBuckets( polygonBuckets, outline.bounds, cellSize, outline.id );
+		for( const edge of outline.edges ) {
+			const record = {
+				id: boundaryEdges.length,
+				metatileId: outline.id,
+				label: outline.label,
+				sideIndex: edge.index,
+				a: edge.a,
+				b: edge.b,
+				bounds: pointBounds( [edge.a, edge.b], eps )
+			};
+			boundaryEdges.push( record );
+			addToSpatialBuckets( edgeBuckets, record.bounds, cellSize, record.id );
+			const key = canonicalUndirectedEdgeKey( record.a, record.b, keyEps );
+			if( !sharedEdgeBuckets.has( key ) ) {
+				sharedEdgeBuckets.set( key, [] );
+			}
+			sharedEdgeBuckets.get( key ).push( record.id );
+		}
+	}
+
+	const adjacency = new Map();
+	for( const bucket of sharedEdgeBuckets.values() ) {
+		for( let i = 0; i < bucket.length; ++i ) {
+			const a = boundaryEdges[bucket[i]];
+			for( let j = i + 1; j < bucket.length; ++j ) {
+				const b = boundaryEdges[bucket[j]];
+				if( a.metatileId === b.metatileId || !sameUndirectedEdge( a, b, keyEps ) ) {
+					continue;
+				}
+				adjacency.set( `${a.metatileId}:${a.sideIndex}`, {
+					metatileId: b.metatileId,
+					sideIndex: b.sideIndex
+				} );
+				adjacency.set( `${b.metatileId}:${b.sideIndex}`, {
+					metatileId: a.metatileId,
+					sideIndex: a.sideIndex
+				} );
+			}
+		}
+	}
+
+	for( const ids of edgeBuckets.values() ) {
+		ids.sort( (a, b) => a - b );
+	}
+	for( const ids of polygonBuckets.values() ) {
+		ids.sort( (a, b) => a - b );
+	}
+
+	return {
+		metatileLevel,
+		outlines,
+		boundaryEdges,
+		adjacency,
+		eps,
+		cellSize,
+		edgeIndex: { cellSize, buckets: edgeBuckets },
+		polygonIndex: { cellSize, buckets: polygonBuckets }
+	};
+}
+
+function latestMetatileCacheForSource() {
+	if( !latestDiagnosticsSourceValue ) {
+		return null;
+	}
+	if( !latestMetatileAnalysisCache ||
+		latestMetatileAnalysisCache.source !== latestDiagnosticsSourceValue ) {
+		latestMetatileAnalysisCache = {
+			source: latestDiagnosticsSourceValue,
+			levels: new Map(),
+			sequences: new Map()
+		};
+	}
+	return latestMetatileAnalysisCache;
+}
+
+function metatileAnalysisForLevel( level ) {
+	const cache = latestMetatileCacheForSource();
+	if( !cache ) {
+		return null;
+	}
+	if( !cache.levels.has( level ) ) {
+		const tiling = latestDiagnosticsSourceValue.results[0].tiling;
+		cache.levels.set( level, buildMetatileAnalysisForLevel( tiling, level ) );
+	}
+	return cache.levels.get( level );
+}
+
+function segmentIntersection( p, q, a, b, eps, tEps ) {
 	const r = pointSub( q, p );
 	const s = pointSub( b, a );
 	const denom = cross2( r, s );
@@ -417,77 +740,320 @@ function segmentIntersection( p, q, a, b, eps ) {
 	const ap = pointSub( a, p );
 	const t = cross2( ap, s ) / denom;
 	const u = cross2( ap, r ) / denom;
-	if( t < eps || t > 1 - eps || u < -eps || u > 1 + eps ) {
+	const paramEps = tEps == null ? eps : tEps;
+	if( t < -paramEps || t > 1 + paramEps || u < -paramEps || u > 1 + paramEps ) {
 		return null;
 	}
+	const clampedT = Math.max( 0, Math.min( 1, t ) );
+	const clampedU = Math.max( 0, Math.min( 1, u ) );
 	return {
-		t,
-		u,
-		point: pointAdd( p, pointScale( r, t ) )
+		t: clampedT,
+		u: clampedU,
+		point: pointAdd( p, pointScale( r, clampedT ) )
 	};
 }
 
-function buildMetatileSequenceForResult( result, outlines, metatileLevel ) {
-	const points = result.points || [];
-	const eps = result.tiling && result.tiling.tolerances ?
-		result.tiling.tolerances.EPS * 1000 : 1e-7;
-	const entries = [];
+function candidateFromBoundaryEdge( edge ) {
+	return {
+		metatileId: edge.metatileId,
+		metatileLabel: edge.label,
+		label: edge.label,
+		sideIndex: edge.sideIndex
+	};
+}
+
+function sortCandidates( candidates ) {
+	candidates.sort( (a, b) =>
+		a.metatileId - b.metatileId ||
+		a.sideIndex - b.sideIndex ||
+		String( a.label || a.metatileLabel ).localeCompare( String( b.label || b.metatileLabel ) ) );
+	return candidates;
+}
+
+function uniqueCandidates( candidates ) {
+	const seen = new Set();
+	const result = [];
+	for( const candidate of sortCandidates( candidates ) ) {
+		const key = `${candidate.metatileId}:${candidate.sideIndex}`;
+		if( seen.has( key ) ) {
+			continue;
+		}
+		seen.add( key );
+		result.push( candidate );
+	}
+	return result;
+}
+
+function locateMetatileContaining( analysis, point, preferredId ) {
+	const eps = analysis.eps;
+	const preferred = analysis.outlines[preferredId];
+	if( preferred && boundsOverlap( preferred.bounds, pointBounds( [point], eps ) ) &&
+		pointInPolygon( point, preferred.polygon, eps ) ) {
+		return preferred;
+	}
+	const candidates = spatialCandidatesForPoint( analysis.polygonIndex, point );
+	for( const id of candidates ) {
+		const outline = analysis.outlines[id];
+		if( outline && pointInPolygon( point, outline.polygon, eps ) ) {
+			return outline;
+		}
+	}
+	for( const outline of analysis.outlines ) {
+		if( pointInPolygon( point, outline.polygon, eps ) ) {
+			return outline;
+		}
+	}
+	return null;
+}
+
+function sideIndexForTransition( candidates, metatileId ) {
+	const candidate = candidates.find( item => item.metatileId === metatileId );
+	return candidate ? candidate.sideIndex : null;
+}
+
+function transitionToken( entry ) {
+	if( entry.kind === 'continuity-gap' ) {
+		const from = entry.fromExpectedLabel || '?';
+		const to = entry.toObservedLabel || '?';
+		return `!gap:${from}->${to}`;
+	}
+	const from = entry.fromMetatileId == null || entry.fromSideIndex == null ?
+		'?' : `${entry.fromLabel}${entry.fromSideIndex}`;
+	const to = entry.toMetatileId == null || entry.toSideIndex == null ?
+		'?' : `${entry.toLabel}${entry.toSideIndex}`;
+	return `${from}->${to}`;
+}
+
+function buildPathSegments( points, eps ) {
+	const segments = [];
+	let pathStart = 0;
 	for( let idx = 1; idx < points.length; ++idx ) {
 		const p = points[idx - 1];
 		const q = points[idx];
-		const hits = [];
-		for( const outline of outlines ) {
-			for( const edge of outline.edges ) {
-				const hit = segmentIntersection( p, q, edge.a, edge.b, eps );
-				if( hit ) {
-					hits.push( {
-						segmentIndex: idx,
-						t: hit.t,
-						point: hit.point,
-						metatileId: outline.id,
-						metatileLabel: outline.label,
-						sideIndex: edge.index,
-						symbol: `${outline.label}${edge.index}`
-					} );
-				}
-			}
+		const length = pointDistance( p, q );
+		if( !(length > eps) ) {
+			continue;
 		}
-		hits.sort( (a, b) => a.t - b.t || a.metatileId - b.metatileId || a.sideIndex - b.sideIndex );
-		for( const hit of hits ) {
-			const last = entries[entries.length - 1];
-			if( last && last.segmentIndex === hit.segmentIndex && Math.abs( last.t - hit.t ) <= eps * 10 ) {
-				const symbols = new Set( last.symbol.split( '|' ) );
-				symbols.add( hit.symbol );
-				last.symbol = [...symbols].sort().join( '|' );
-				last.candidates.push( {
-					metatileId: hit.metatileId,
-					metatileLabel: hit.metatileLabel,
-					sideIndex: hit.sideIndex
-				} );
-				continue;
-			}
-			entries.push( {
-				bounce: idx,
-				segmentIndex: hit.segmentIndex,
-				t: hit.t,
-				symbol: hit.symbol,
-				point: clonePoint( hit.point ),
-				candidates: [{
-					metatileId: hit.metatileId,
-					metatileLabel: hit.metatileLabel,
-					sideIndex: hit.sideIndex
-				}]
-			} );
+		segments.push( {
+			segmentIndex: idx,
+			p,
+			q,
+			length,
+			pathStart,
+			pathEnd: pathStart + length
+		} );
+		pathStart += length;
+	}
+	return segments;
+}
+
+function pointAtPathDistance( segments, distance, preferredSegmentIndex ) {
+	if( segments.length === 0 ) {
+		return null;
+	}
+	const totalLength = segments[segments.length - 1].pathEnd;
+	const target = Math.max( 0, Math.min( totalLength, distance ) );
+	let segment = null;
+	if( preferredSegmentIndex != null ) {
+		segment = segments.find( item =>
+			item.segmentIndex === preferredSegmentIndex &&
+			target >= item.pathStart &&
+			target <= item.pathEnd );
+	}
+	if( !segment ) {
+		segment = segments.find( item =>
+			target >= item.pathStart && target <= item.pathEnd );
+	}
+	if( !segment ) {
+		segment = target <= 0 ? segments[0] : segments[segments.length - 1];
+	}
+	const t = segment.length > 0 ?
+		(target - segment.pathStart) / segment.length : 0;
+	return pointLerp( segment.p, segment.q, Math.max( 0, Math.min( 1, t ) ) );
+}
+
+function groupPathHits( hits, epsDistance ) {
+	const groups = [];
+	for( const hit of hits ) {
+		const group = groups.length > 0 &&
+			Math.abs( groups[groups.length - 1].pathOrder - hit.pathOrder ) <= epsDistance ?
+			groups[groups.length - 1] : null;
+		if( group ) {
+			group.hits.push( hit );
+			group.pathOrder = group.hits.reduce( (sum, item) => sum + item.pathOrder, 0 ) / group.hits.length;
+			group.segmentIndex = Math.min( group.segmentIndex, hit.segmentIndex );
+			const representativeHits = group.hits.filter( item => item.segmentIndex === group.segmentIndex );
+			group.t = representativeHits.reduce( (sum, item) => sum + item.t, 0 ) / representativeHits.length;
+			continue;
+		}
+		groups.push( {
+			t: hit.t,
+			pathOrder: hit.pathOrder,
+			segmentIndex: hit.segmentIndex,
+			point: clonePoint( hit.point ),
+			hits: [hit]
+		} );
+	}
+	return groups;
+}
+
+function sampleMetatileAroundPathEvent( analysis, segments, group, prevGroup, nextGroup, preferredBeforeId ) {
+	if( segments.length === 0 ) {
+		return { before: null, after: null };
+	}
+	const totalLength = segments[segments.length - 1].pathEnd;
+	const baseDelta = Math.max( analysis.eps * 20, totalLength * 1e-10, 1e-10 );
+	const beforeGap = prevGroup ? group.pathOrder - prevGroup.pathOrder : group.pathOrder;
+	const afterGap = nextGroup ? nextGroup.pathOrder - group.pathOrder : totalLength - group.pathOrder;
+	const beforeDelta = Math.min( baseDelta, Math.max( 0, beforeGap / 3 ) );
+	const afterDelta = Math.min( baseDelta, Math.max( 0, afterGap / 3 ) );
+	let before = null;
+	let after = null;
+	if( group.pathOrder > 0 && beforeDelta > 0 ) {
+		const point = pointAtPathDistance( segments, group.pathOrder - beforeDelta, group.segmentIndex );
+		before = point ? locateMetatileContaining( analysis, point, preferredBeforeId ) : null;
+	}
+	if( group.pathOrder < totalLength && afterDelta > 0 ) {
+		const point = pointAtPathDistance( segments, group.pathOrder + afterDelta, group.segmentIndex );
+		after = point ? locateMetatileContaining( analysis, point, before ? before.id : preferredBeforeId ) : null;
+	}
+	return { before, after };
+}
+
+function continuityGapEntry( expectedId, expectedLabel, observedId, observedLabel, nextEntry ) {
+	const entry = {
+		kind: 'continuity-gap',
+		ambiguous: true,
+		bounce: nextEntry.bounce,
+		segmentIndex: nextEntry.segmentIndex,
+		t: nextEntry.t,
+		pathOrder: nextEntry.pathOrder,
+		point: clonePoint( nextEntry.point ),
+		fromExpectedMetatileId: expectedId,
+		fromExpectedLabel: expectedLabel,
+		toObservedMetatileId: observedId,
+		toObservedLabel: observedLabel
+	};
+	entry.symbol = transitionToken( entry );
+	return entry;
+}
+
+function enforceMetatileContinuity( transitions, analysis ) {
+	const entries = [];
+	let expectedId = null;
+	let expectedLabel = null;
+	for( const entry of transitions ) {
+		if( expectedId != null && entry.fromMetatileId != null && entry.fromMetatileId !== expectedId ) {
+			entries.push( continuityGapEntry(
+				expectedId,
+				expectedLabel || (analysis.outlines[expectedId] && analysis.outlines[expectedId].label) || null,
+				entry.fromMetatileId,
+				entry.fromLabel,
+				entry ) );
+		}
+		entries.push( entry );
+		if( entry.toMetatileId != null ) {
+			expectedId = entry.toMetatileId;
+			expectedLabel = entry.toLabel;
 		}
 	}
+	return entries;
+}
+
+function buildMetatileSequenceForResult( result, analysis, metatileLevel ) {
+	const points = result.points || [];
+	const eps = result.tiling && result.tiling.tolerances ?
+		result.tiling.tolerances.EPS * 1000 : 1e-7;
+	const segments = buildPathSegments( points, eps );
+	const allHits = [];
+	for( const segment of segments ) {
+		const epsT = Math.max( eps / segment.length * 100, 1e-10 );
+		const segmentBounds = pointBounds( [segment.p, segment.q], eps );
+		const hits = [];
+		const edgeIds = spatialCandidatesForBounds( analysis.edgeIndex, segmentBounds );
+		for( const edgeId of edgeIds ) {
+			const edge = analysis.boundaryEdges[edgeId];
+			if( !edge || !boundsOverlap( segmentBounds, edge.bounds ) ) {
+				continue;
+			}
+			const hit = segmentIntersection( segment.p, segment.q, edge.a, edge.b, eps, epsT );
+			if( hit ) {
+				hits.push( {
+					segmentIndex: segment.segmentIndex,
+					t: hit.t,
+					pathOrder: segment.pathStart + hit.t * segment.length,
+					point: hit.point,
+					edge
+				} );
+			}
+		}
+		hits.sort( (a, b) =>
+			a.t - b.t ||
+			a.edge.metatileId - b.edge.metatileId ||
+			a.edge.sideIndex - b.edge.sideIndex );
+		allHits.push( ...hits );
+	}
+	allHits.sort( (a, b) =>
+		a.pathOrder - b.pathOrder ||
+		a.segmentIndex - b.segmentIndex ||
+		a.t - b.t ||
+		a.edge.metatileId - b.edge.metatileId ||
+		a.edge.sideIndex - b.edge.sideIndex );
+	const groups = groupPathHits( allHits, Math.max( analysis.eps * 20, eps * 20 ) );
+	const transitions = [];
+	for( let groupIdx = 0; groupIdx < groups.length; ++groupIdx ) {
+		const group = groups[groupIdx];
+		const prevGroup = groupIdx > 0 ? groups[groupIdx - 1] : null;
+		const nextGroup = groupIdx + 1 < groups.length ? groups[groupIdx + 1] : null;
+		const samples = sampleMetatileAroundPathEvent(
+			analysis,
+			segments,
+			group,
+			prevGroup,
+			nextGroup,
+			transitions.length > 0 ? transitions[transitions.length - 1].toMetatileId : null );
+		const candidates = uniqueCandidates(
+			group.hits.map( hit => candidateFromBoundaryEdge( hit.edge ) ) );
+		if( samples.before && samples.after && samples.before.id === samples.after.id ) {
+			continue;
+		}
+		const fromSideIndex = samples.before ?
+			sideIndexForTransition( candidates, samples.before.id ) : null;
+		const toSideIndex = samples.after ?
+			sideIndexForTransition( candidates, samples.after.id ) : null;
+		transitions.push( {
+			kind: 'transition',
+			bounce: group.segmentIndex,
+			segmentIndex: group.segmentIndex,
+			t: group.t,
+			pathOrder: group.pathOrder,
+			point: clonePoint( group.point ),
+			fromMetatileId: samples.before ? samples.before.id : null,
+			fromLabel: samples.before ? samples.before.label : null,
+			fromSideIndex,
+			toMetatileId: samples.after ? samples.after.id : null,
+			toLabel: samples.after ? samples.after.label : null,
+			toSideIndex,
+			candidates,
+			ambiguous: !samples.before || !samples.after || fromSideIndex == null || toSideIndex == null
+		} );
+	}
+	for( const entry of transitions ) {
+		entry.symbol = transitionToken( entry );
+	}
+	const entries = enforceMetatileContinuity( transitions, analysis );
+	const gapCount = entries.filter( entry => entry.kind === 'continuity-gap' ).length;
+	const transitionCount = entries.length - gapCount;
 	return {
 		id: result.color || 'trajectory',
 		color: result.color || 'red',
 		label: result.color || 'trajectory',
 		type: 'metatile-boundary',
 		metatileLevel,
-		outlineCount: outlines.length,
+		outlineCount: analysis.outlines.length,
 		count: entries.length,
+		transitionCount,
+		gapCount,
 		tokens: entries.map( entry => entry.symbol ),
 		entries
 	};
@@ -504,13 +1070,26 @@ function buildMetatileCuttingSequenceDiagnostics( levels ) {
 		Math.max( 1, Math.min( maxLevel, Math.floor( level ) ) ) ) )]
 		.filter( Number.isFinite )
 		.sort( (a, b) => a - b );
+	const cache = latestMetatileCacheForSource();
 	const levelPayloads = requestedLevels.map( level => {
-		const outlines = metatileOutlinesForLevel( tiling, level );
-		return {
+		const sequenceKey = `${level}`;
+		if( cache && cache.sequences.has( sequenceKey ) ) {
+			return cache.sequences.get( sequenceKey );
+		}
+		const analysis = metatileAnalysisForLevel( level );
+		const payload = {
 			level,
-			outlineCount: outlines.length,
+			outlineCount: analysis.outlines.length,
 			sequences: results.map( result =>
-				buildMetatileSequenceForResult( result, outlines, level ) )
+				buildMetatileSequenceForResult( result, analysis, level ) )
+		};
+		if( cache ) {
+			cache.sequences.set( sequenceKey, payload );
+		}
+		return {
+			level: payload.level,
+			outlineCount: payload.outlineCount,
+			sequences: payload.sequences
 		};
 	} );
 	return {
@@ -560,7 +1139,9 @@ function buildDiagnosticsPayload( req, specs, results ) {
 		},
 		graphs: [
 			buildDistanceGraphDiagnostics( publicResults ),
-			buildStartDistanceGraphDiagnostics( publicResults )
+			buildStartDistanceGraphDiagnostics( publicResults ),
+			buildUnsortedVertexClearanceGraphDiagnostics( results ),
+			buildSortedVertexClearanceGraphDiagnostics( results )
 		]
 	};
 }
@@ -576,6 +1157,7 @@ function saveDiagnosticsPayload( payload ) {
 function setLatestDiagnosticsPayload( payload, source ) {
 	latestDiagnosticsPayloadValue = payload;
 	latestDiagnosticsSourceValue = source || null;
+	latestMetatileAnalysisCache = null;
 	latestDiagnosticsJSON = JSON.stringify( payload );
 	latestDiagnosticsETagValue = `"${payload.runId}-${Buffer.byteLength( latestDiagnosticsJSON )}"`;
 }
@@ -732,6 +1314,7 @@ function trajectoryPayload( tilingConfig, spec, result, patchRadius ) {
 	const results = Array.isArray( result ) ? result : [result];
 	const specs = Array.isArray( spec ) ? spec : [spec];
 	const publicResults = results.map( publicResult );
+	const startTileSelection = tilingConfig.startTileId == null ? 'centralTileId' : 'tileId';
 	return {
 		format: 'hatviz-billiards-trajectory',
 		version: 1,
@@ -742,7 +1325,7 @@ function trajectoryPayload( tilingConfig, spec, result, patchRadius ) {
 			patchRadius
 		},
 		trajectorySpec: {
-			startTileSelection: 'centralTileId',
+			startTileSelection,
 			startTileId: results[0].startTileId,
 			startEdge: specs[0].startEdge,
 			edgeParameter: specs[0].edgeParameter,
@@ -752,7 +1335,7 @@ function trajectoryPayload( tilingConfig, spec, result, patchRadius ) {
 		},
 		trajectories: specs.map( (entry, idx) => ( {
 			color: entry.color || (idx === 1 ? 'blue' : 'red'),
-			startTileSelection: 'centralTileId',
+			startTileSelection,
 			startTileId: results[idx] ? results[idx].startTileId : null,
 			startEdge: entry.startEdge,
 			edgeParameter: entry.edgeParameter,
@@ -770,6 +1353,10 @@ function sanitizeRunRequest( body ) {
 	const rootType = ['H', 'T', 'P', 'F'].includes( body.rootType ) ? body.rootType : 'H';
 	const level = Math.max( 1, Math.min( 6, Math.floor( body.level == null ? 1 : body.level ) ) );
 	const patchRadius = Math.max( 0, Math.floor( body.patchRadius == null ? 1 : body.patchRadius ) );
+	const rawStartTileId = body.startTileId == null || body.startTileId === '' ?
+		null : Number( body.startTileId );
+	const startTileId = Number.isInteger( rawStartTileId ) && rawStartTileId >= 0 ?
+		rawStartTileId : null;
 	const startEdge = Math.max( 0, Math.min( 12, Math.floor( body.startEdge == null ? 0 : body.startEdge ) ) );
 	const edgeParameter = Math.max( 0, Math.min( 1, Number( body.edgeParameter == null ? 0.5 : body.edgeParameter ) ) );
 	const angleDegrees = Number.isFinite( Number( body.angleDegrees ) ) ? Number( body.angleDegrees ) : 60;
@@ -782,7 +1369,7 @@ function sanitizeRunRequest( body ) {
 		edgeParameter: Math.max( 0, Math.min( 1, Number( entry.edgeParameter == null ? edgeParameter : entry.edgeParameter ) ) ),
 		angleDegrees: Number.isFinite( Number( entry.angleDegrees ) ) ? Number( entry.angleDegrees ) : angleDegrees
 	} ) );
-	return { rootType, level, patchRadius, startEdge, edgeParameter, angleDegrees, maxBounces, trajectories };
+	return { rootType, level, patchRadius, startTileId, startEdge, edgeParameter, angleDegrees, maxBounces, trajectories };
 }
 
 function handleRun( body ) {
@@ -793,10 +1380,13 @@ function handleRun( body ) {
 		`[run] ${req.rootType}:${req.level}, bounces=${req.maxBounces}, ` +
 		`requestedPatchRadius=${req.patchRadius}, initialPatchRadius=${initialPatchRadius}` );
 	const tiling = getTiling( req.rootType, req.level );
+	const requestedStartTileIsValid = req.startTileId != null && tiling.tiles[req.startTileId];
+	const startTileId = requestedStartTileIsValid ? req.startTileId : tiling.centralTileId;
+	req.startTileId = requestedStartTileIsValid ? startTileId : null;
 	const trajectoryStart = Date.now();
 	const specs = req.trajectories.map( entry => ( {
 		color: entry.color,
-		startTileId: tiling.centralTileId,
+		startTileId,
 		startEdge: entry.startEdge,
 		edgeParameter: entry.edgeParameter,
 		angleDegrees: entry.angleDegrees,

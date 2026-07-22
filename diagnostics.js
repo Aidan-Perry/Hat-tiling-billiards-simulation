@@ -81,7 +81,7 @@
 		container.appendChild( sequenceCardTitle( sequence.label || sequence.id, sequence.count ) );
 		const meta = div( 'meta-grid' );
 		if( sequence.type === 'hat-edge' ) {
-			meta.appendChild( metaRow( 'Type', 'hat side index' ) );
+			meta.appendChild( metaRow( 'Type', 'hat side transition' ) );
 		} else {
 			meta.appendChild( metaRow( 'Type', `metatile L${sequence.metatileLevel}` ) );
 			meta.appendChild( metaRow( 'Outlines', sequence.outlineCount ) );
@@ -292,7 +292,8 @@
 		}
 	}
 
-	function drawChartBase( canvas, maxX, maxY, xLabel, yLabel ) {
+	function drawChartBase( canvas, maxX, maxY, xLabel, yLabel, options ) {
+		options = options || {};
 		const rect = canvas.getBoundingClientRect();
 		if( rect.width <= 0 || rect.height <= 0 ) {
 			return null;
@@ -309,7 +310,10 @@
 		const plotW = Math.max( 1, width - pad.left - pad.right );
 		const plotH = Math.max( 1, height - pad.top - pad.bottom );
 		maxX = Math.max( 1, maxX || 1 );
-		maxY = Math.max( 1, maxY || 1 );
+		maxY = Number.isFinite( maxY ) && maxY > 0 ? maxY : 1;
+		if( !options.exactMaxY ) {
+			maxY = Math.max( 1, maxY );
+		}
 
 		function xScale( x ) {
 			return pad.left + (x / maxX) * plotW;
@@ -479,7 +483,54 @@
 		drawSeriesLines( scale.ctx, activeSeries, scale, scale.plotW );
 	}
 
-	function renderSeriesToggles( graph, canvas ) {
+	function drawVertexClearanceChart( canvas, graph ) {
+		const rect = canvas.getBoundingClientRect();
+		if( rect.width <= 0 || rect.height <= 0 ) {
+			window.requestAnimationFrame( () => drawVertexClearanceChart( canvas, graph ) );
+			return;
+		}
+		const activeSeries = (graph.series || []).filter( series =>
+			seriesVisible( graph.id, series.id ) );
+		let maxX = 1;
+		let maxY = 0;
+		for( const series of activeSeries ) {
+			const lastX = graph.type === 'sorted-crossing-vertex-clearance' ?
+				series.lastRank : series.lastBounce;
+			maxX = Math.max( maxX, lastX || 0 );
+			for( const sample of series.samples || [] ) {
+				if( Number.isFinite( sample.distance ) ) {
+					maxY = Math.max( maxY, sample.distance );
+				}
+			}
+		}
+		const scale = drawChartBase(
+			canvas,
+			maxX,
+			maxY,
+			graph.xAxis || 'crossing index',
+			'min distance to side vertex',
+			{ exactMaxY: true }
+		);
+		if( !scale ) {
+			window.requestAnimationFrame( () => drawVertexClearanceChart( canvas, graph ) );
+			return;
+		}
+		if( activeSeries.length === 0 ) {
+			const ctx = scale.ctx;
+			ctx.fillStyle = '#5d6673';
+			ctx.font = '14px system-ui, sans-serif';
+			ctx.textAlign = 'center';
+			ctx.fillText(
+				'No trajectories selected',
+				canvas.getBoundingClientRect().width / 2,
+				canvas.getBoundingClientRect().height / 2
+			);
+			return;
+		}
+		drawSeriesLines( scale.ctx, activeSeries, scale, scale.plotW );
+	}
+
+	function renderSeriesToggles( graph, canvas, drawChart ) {
 		const toggles = div( 'series-toggles' );
 		for( const series of graph.series || [] ) {
 			const label = document.createElement( 'label' );
@@ -491,15 +542,44 @@
 			swatch.className = 'series-swatch';
 			swatch.style.backgroundColor = cssColorForSeries( series.color );
 			const text = document.createElement( 'span' );
-			text.textContent = `${series.label} (${series.pointCount} pts)`;
+			const count = series.pointCount == null ? series.sampleCount : series.pointCount;
+			text.textContent = `${series.label} (${count} pts)`;
 			checkbox.addEventListener( 'change', () => {
 				setSeriesVisible( graph.id, series.id, checkbox.checked );
-				window.requestAnimationFrame( () => drawStartDistanceChart( canvas, graph ) );
+				window.requestAnimationFrame( () => drawChart( canvas, graph ) );
 			} );
 			label.append( checkbox, swatch, text );
 			toggles.appendChild( label );
 		}
 		return toggles;
+	}
+
+	function renderVertexClearanceMeta( body, graphData, payload ) {
+		const meta = div( 'meta-grid' );
+		const run = payload.run || {};
+		const series = graphData.series || [];
+		const sampleTotal = series.reduce( (sum, item) =>
+			sum + ((item.samples || []).length), 0 );
+		const skippedTotal = series.reduce( (sum, item) =>
+			sum + (item.skippedMissingEdgeCount || 0), 0 );
+		const longest = series.reduce( (max, item) =>
+			Math.max( max, item.sampleCount || 0 ), 0 );
+		meta.appendChild( metaRow( 'Root type', run.rootType ) );
+		meta.appendChild( metaRow( 'Level', run.level ) );
+		meta.appendChild( metaRow( 'Requested bounces', run.requestedBounces ) );
+		meta.appendChild( metaRow( 'Trajectories', series.length ) );
+		meta.appendChild( metaRow( 'Longest series', longest ) );
+		meta.appendChild( metaRow( 'Total samples', sampleTotal ) );
+		meta.appendChild( metaRow( 'Skipped crossings', skippedTotal ) );
+		for( const item of series ) {
+			const settings = item.settings || {};
+			meta.appendChild( metaRow(
+				item.label,
+				`${shortStatus( item.status )}, ${item.sampleCount} crossings, edge ${settings.startEdge}, t ${fmt( settings.edgeParameter )}, angle ${fmt( settings.angleDegrees )}`
+			) );
+		}
+		meta.appendChild( metaRow( 'Draw mode', sampleTotal > 2500 ? 'decimated' : 'full' ) );
+		body.appendChild( meta );
 	}
 
 	const graphRegistry = [
@@ -573,7 +653,7 @@
 				const body = div( 'graph-card' );
 				const chartWrap = document.createElement( 'div' );
 				const canvas = document.createElement( 'canvas' );
-				chartWrap.appendChild( renderSeriesToggles( graphData, canvas ) );
+				chartWrap.appendChild( renderSeriesToggles( graphData, canvas, drawStartDistanceChart ) );
 				chartWrap.appendChild( canvas );
 				body.appendChild( chartWrap );
 
@@ -601,6 +681,64 @@
 				body.appendChild( meta );
 				container.appendChild( body );
 				window.requestAnimationFrame( () => drawStartDistanceChart( canvas, graphData ) );
+			}
+		},
+		{
+			id: 'crossing-vertex-clearance',
+			title: 'Crossing Distance to Nearest Side Vertex by Bounce',
+			applicability: function (payload) {
+				return payload && payload.graphs &&
+					payload.graphs.find( graph => graph.id === 'crossing-vertex-clearance' );
+			},
+			render: function (container, graphData, payload) {
+				const title = document.createElement( 'h2' );
+				title.textContent = this.title;
+				container.appendChild( title );
+
+				if( !graphData.available ) {
+					container.appendChild( div( 'empty', graphData.reason || 'requires at least one trajectory' ) );
+					return;
+				}
+
+				const body = div( 'graph-card' );
+				const chartWrap = document.createElement( 'div' );
+				const canvas = document.createElement( 'canvas' );
+				chartWrap.appendChild( renderSeriesToggles( graphData, canvas, drawVertexClearanceChart ) );
+				chartWrap.appendChild( canvas );
+				body.appendChild( chartWrap );
+
+				renderVertexClearanceMeta( body, graphData, payload );
+				container.appendChild( body );
+				window.requestAnimationFrame( () => drawVertexClearanceChart( canvas, graphData ) );
+			}
+		},
+		{
+			id: 'sorted-crossing-vertex-clearance',
+			title: 'Sorted Crossing Distance to Nearest Side Vertex',
+			applicability: function (payload) {
+				return payload && payload.graphs &&
+					payload.graphs.find( graph => graph.id === 'sorted-crossing-vertex-clearance' );
+			},
+			render: function (container, graphData, payload) {
+				const title = document.createElement( 'h2' );
+				title.textContent = this.title;
+				container.appendChild( title );
+
+				if( !graphData.available ) {
+					container.appendChild( div( 'empty', graphData.reason || 'requires at least one trajectory' ) );
+					return;
+				}
+
+				const body = div( 'graph-card' );
+				const chartWrap = document.createElement( 'div' );
+				const canvas = document.createElement( 'canvas' );
+				chartWrap.appendChild( renderSeriesToggles( graphData, canvas, drawVertexClearanceChart ) );
+				chartWrap.appendChild( canvas );
+				body.appendChild( chartWrap );
+
+				renderVertexClearanceMeta( body, graphData, payload );
+				container.appendChild( body );
+				window.requestAnimationFrame( () => drawVertexClearanceChart( canvas, graphData ) );
 			}
 		}
 	];
