@@ -14,13 +14,23 @@
 	let latestETag = null;
 	let latestPayload = null;
 	const graphVisibility = new Map();
-	const selectedMetatileLevels = new Set();
+	let languageComplexityMaxN = null;
+	let metatileLanguageComplexityMaxN = null;
+	let metatileSequenceRequestRunId = null;
 
 	function fmt( value, digits ) {
 		if( value == null || !Number.isFinite( Number( value ) ) ) {
 			return 'n/a';
 		}
 		return Number( value ).toPrecision( digits || 5 );
+	}
+
+	function truncFixed( value, digits ) {
+		if( value == null || !Number.isFinite( Number( value ) ) ) {
+			return 'n/a';
+		}
+		const factor = Math.pow( 10, digits );
+		return (Math.trunc( Number( value ) * factor ) / factor).toFixed( digits );
 	}
 
 	function shortStatus( value ) {
@@ -66,6 +76,48 @@
 		return (tokens || []).join( ' ' );
 	}
 
+	function copyTextToClipboard( text ) {
+		if( navigator.clipboard && navigator.clipboard.writeText ) {
+			return navigator.clipboard.writeText( text );
+		}
+		const textarea = document.createElement( 'textarea' );
+		textarea.value = text;
+		textarea.setAttribute( 'readonly', '' );
+		textarea.style.position = 'fixed';
+		textarea.style.left = '-9999px';
+		document.body.appendChild( textarea );
+		textarea.select();
+		try {
+			document.execCommand( 'copy' );
+			return Promise.resolve();
+		} catch( err ) {
+			return Promise.reject( err );
+		} finally {
+			document.body.removeChild( textarea );
+		}
+	}
+
+	function copyButton( text ) {
+		const button = document.createElement( 'button' );
+		button.type = 'button';
+		button.textContent = 'Copy word';
+		button.addEventListener( 'click', async () => {
+			const original = button.textContent;
+			button.disabled = true;
+			try {
+				await copyTextToClipboard( text );
+				button.textContent = 'Copied';
+			} catch( err ) {
+				button.textContent = 'Copy failed';
+			}
+			window.setTimeout( () => {
+				button.textContent = original;
+				button.disabled = false;
+			}, 1200 );
+		} );
+		return button;
+	}
+
 	function sequenceCardTitle( title, count ) {
 		const row = div( 'sequence-title' );
 		const heading = document.createElement( 'h2' );
@@ -78,16 +130,26 @@
 	}
 
 	function renderTokenSequence( container, sequence ) {
-		container.appendChild( sequenceCardTitle( sequence.label || sequence.id, sequence.count ) );
+		const tokens = tokenText( sequence.tokens );
+		const title = sequenceCardTitle( sequence.label || sequence.id, sequence.count );
+		title.appendChild( copyButton( tokens ) );
+		container.appendChild( title );
 		const meta = div( 'meta-grid' );
 		if( sequence.type === 'hat-edge' ) {
 			meta.appendChild( metaRow( 'Type', 'hat side transition' ) );
+			const stats = sequence.hatVisitStats || {};
+			meta.appendChild( metaRow( 'Visited hats', stats.visitedHatCount ) );
+			meta.appendChild( metaRow( 'Hats / bounce', truncFixed( stats.hatsPerBounce, 4 ) ) );
 		} else {
-			meta.appendChild( metaRow( 'Type', `metatile L${sequence.metatileLevel}` ) );
-			meta.appendChild( metaRow( 'Outlines', sequence.outlineCount ) );
+			meta.appendChild( metaRow( 'Type', sequence.type === 'metatile-boundary' ?
+				'Figure 4.1 L1 cluster transition' : `metatile L${sequence.metatileLevel}` ) );
+			meta.appendChild( metaRow( 'Clusters', sequence.clusterCount || sequence.outlineCount ) );
+			if( sequence.ambiguousCount ) {
+				meta.appendChild( metaRow( 'Ambiguous sides', sequence.ambiguousCount ) );
+			}
 		}
 		container.appendChild( meta );
-		const stream = div( 'token-stream', tokenText( sequence.tokens ) || 'empty' );
+		const stream = div( 'token-stream', tokens || 'empty' );
 		container.appendChild( stream );
 	}
 
@@ -109,52 +171,184 @@
 		sequencesEl.appendChild( card );
 	}
 
-	function renderMetatileControls( run, symbolic ) {
+	function drawLanguageComplexityChart( canvas, sequences, maxN ) {
+		const rect = canvas.getBoundingClientRect();
+		if( rect.width <= 0 || rect.height <= 0 ) {
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, maxN ) );
+			return;
+		}
+		const cutoff = Number.isFinite( maxN ) && maxN > 0 ? Math.floor( maxN ) : null;
+		const seriesList = (sequences || []).map( sequence => {
+			const complexity = sequence.languageComplexity || {};
+			return {
+				id: sequence.id,
+				color: sequence.color,
+				label: sequence.label || sequence.id,
+				samples: (complexity.samples || [])
+					.filter( sample => cutoff == null || sample.n <= cutoff )
+					.map( sample => ( {
+						bounce: sample.n,
+						distance: sample.uniqueSubstringCount
+					} ) )
+			};
+		} ).filter( series => series.samples.length > 0 );
+		let maxX = cutoff || 1;
+		let maxY = 1;
+		for( const series of seriesList ) {
+			for( const sample of series.samples ) {
+				if( cutoff == null ) {
+					maxX = Math.max( maxX, sample.bounce );
+				}
+				maxY = Math.max( maxY, sample.distance );
+			}
+		}
+		const scale = drawChartBase(
+			canvas,
+			maxX,
+			maxY * 1.08,
+			'substring length n',
+			'unique substrings'
+		);
+		if( !scale ) {
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, maxN ) );
+			return;
+		}
+		if( seriesList.length === 0 ) {
+			const ctx = scale.ctx;
+			ctx.fillStyle = '#5d6673';
+			ctx.font = '14px system-ui, sans-serif';
+			ctx.textAlign = 'center';
+			ctx.fillText(
+				'No language complexity samples',
+				canvas.getBoundingClientRect().width / 2,
+				canvas.getBoundingClientRect().height / 2
+			);
+			return;
+		}
+		drawSeriesLines( scale.ctx, seriesList, scale, scale.plotW );
+	}
+
+	function renderLanguageComplexityGraph( symbolic, run ) {
+		const sequences = (symbolic.hatSequences || []).filter( sequence =>
+			sequence.languageComplexity && (sequence.languageComplexity.samples || []).length > 0 );
 		const card = div( 'card' );
 		const title = document.createElement( 'h2' );
-		title.textContent = 'Metatile Cutting Sequences';
+		title.textContent = 'Hat Sequence Language Complexity';
 		card.appendChild( title );
-		const maxLevel = Math.max( 1, Math.floor(
-			(symbolic.metatileSequences && symbolic.metatileSequences.maxLevel) ||
-			(run && run.level) || 1 ) );
-		const controls = div( 'level-controls' );
-		for( let level = 1; level <= maxLevel; ++level ) {
-			const label = document.createElement( 'label' );
-			label.className = 'series-toggle';
-			const checkbox = document.createElement( 'input' );
-			checkbox.type = 'checkbox';
-			checkbox.value = String( level );
-			checkbox.checked = selectedMetatileLevels.has( level );
-			checkbox.addEventListener( 'change', () => {
-				if( checkbox.checked ) {
-					selectedMetatileLevels.add( level );
-				} else {
-					selectedMetatileLevels.delete( level );
-				}
-			} );
-			const text = document.createElement( 'span' );
-			text.textContent = `L${level}`;
-			label.append( checkbox, text );
-			controls.appendChild( label );
+		if( sequences.length === 0 ) {
+			card.appendChild( div( 'empty', 'No language complexity samples in the latest run.' ) );
+			sequencesEl.appendChild( card );
+			return;
 		}
-		const loadButton = document.createElement( 'button' );
-		loadButton.type = 'button';
-		loadButton.textContent = 'Load Selected';
-		loadButton.addEventListener( 'click', loadSelectedMetatileSequences );
-		controls.appendChild( loadButton );
-		card.appendChild( controls );
+
+		const body = div( 'graph-card' );
+		const chartWrap = document.createElement( 'div' );
+		const legend = div( 'series-toggles' );
+		for( const sequence of sequences ) {
+			const item = div( 'series-toggle' );
+			const swatch = document.createElement( 'span' );
+			swatch.className = 'series-swatch';
+			swatch.style.backgroundColor = cssColorForSeries( sequence.color );
+			const text = document.createElement( 'span' );
+			const complexity = sequence.languageComplexity || {};
+			text.textContent = `${sequence.label || sequence.id} (${complexity.sampleCount || 0} n values)`;
+			item.append( swatch, text );
+			legend.appendChild( item );
+		}
+		const canvas = document.createElement( 'canvas' );
+		const maxSampleN = sequences.reduce( (max, sequence) =>
+			Math.max( max, (sequence.languageComplexity || {}).sampleCount || 0 ), 0 );
+		if( languageComplexityMaxN == null || languageComplexityMaxN > maxSampleN ) {
+			languageComplexityMaxN = maxSampleN;
+		}
+		const cutoffControls = div( 'level-controls' );
+		const cutoffLabel = document.createElement( 'label' );
+		cutoffLabel.className = 'series-toggle';
+		const cutoffInput = document.createElement( 'input' );
+		cutoffInput.type = 'number';
+		cutoffInput.min = '1';
+		cutoffInput.max = String( maxSampleN );
+		cutoffInput.step = '1';
+		cutoffInput.value = String( languageComplexityMaxN || maxSampleN || 1 );
+		const cutoffText = document.createElement( 'span' );
+		cutoffText.textContent = 'Max substring length';
+		cutoffLabel.append( cutoffText, cutoffInput );
+		const applyButton = document.createElement( 'button' );
+		applyButton.type = 'button';
+		applyButton.textContent = 'Redisplay';
+		const resetButton = document.createElement( 'button' );
+		resetButton.type = 'button';
+		resetButton.textContent = 'Show all';
+		function redrawWithInput() {
+			const value = Math.max( 1, Math.min( maxSampleN, Math.floor( Number( cutoffInput.value ) || maxSampleN || 1 ) ) );
+			languageComplexityMaxN = value;
+			cutoffInput.value = String( value );
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, languageComplexityMaxN ) );
+		}
+		applyButton.addEventListener( 'click', redrawWithInput );
+		cutoffInput.addEventListener( 'keydown', event => {
+			if( event.key === 'Enter' ) {
+				redrawWithInput();
+			}
+		} );
+		resetButton.addEventListener( 'click', () => {
+			languageComplexityMaxN = maxSampleN;
+			cutoffInput.value = String( maxSampleN );
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, languageComplexityMaxN ) );
+		} );
+		cutoffControls.append( cutoffLabel, applyButton, resetButton );
+		chartWrap.append( legend, cutoffControls, canvas );
+		body.appendChild( chartWrap );
+
+		const meta = div( 'meta-grid' );
+		meta.appendChild( metaRow( 'Definition', 'number of distinct contiguous token substrings of length n' ) );
+		meta.appendChild( metaRow( 'Requested bounces', run && run.requestedBounces ) );
+		for( const sequence of sequences ) {
+			const complexity = sequence.languageComplexity || {};
+			const stats = sequence.hatVisitStats || {};
+			meta.appendChild( metaRow(
+				sequence.label || sequence.id,
+				`${complexity.tokenCount || 0} tokens; ${truncFixed( stats.hatsPerBounce, 4 )} hats/bounce; peak ${complexity.peakValue || 0} at n=${complexity.peakN == null ? 'n/a' : complexity.peakN}`
+			) );
+		}
+		body.appendChild( meta );
+		card.appendChild( body );
 		sequencesEl.appendChild( card );
+		window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, languageComplexityMaxN ) );
 	}
 
 	function renderMetatileSequences( symbolic ) {
 		const metatile = symbolic.metatileSequences || {};
+		const levels = metatile.levels || [];
+		if( levels.length === 0 ) {
+			const loadingThisRun = latestPayload && metatileSequenceRequestRunId === latestPayload.runId;
+			const card = div( 'card' );
+			const title = document.createElement( 'h2' );
+			title.textContent = 'Metatile Cutting Sequence';
+			card.appendChild( title );
+			const controls = div( 'level-controls' );
+			const loadButton = document.createElement( 'button' );
+			loadButton.type = 'button';
+			loadButton.textContent = loadingThisRun ? 'Building...' : 'Load metatile sequence';
+			loadButton.disabled = loadingThisRun;
+			loadButton.addEventListener( 'click', loadMetatileSequencesForLatest );
+			controls.appendChild( loadButton );
+			card.appendChild( controls );
+			card.appendChild( div( 'empty', metatile.error || 'Metatile sequence has not been loaded for the latest run.' ) );
+			sequencesEl.appendChild( card );
+			return;
+		}
 		for( const levelPayload of metatile.levels || [] ) {
 			const card = div( 'card' );
 			const title = document.createElement( 'h2' );
-			title.textContent = `Metatile L${levelPayload.level}`;
+			title.textContent = 'Metatile Cutting Sequence';
 			card.appendChild( title );
 			const meta = div( 'meta-grid' );
-			meta.appendChild( metaRow( 'Outlines', levelPayload.outlineCount ) );
+			meta.appendChild( metaRow( 'Definition', levelPayload.label || 'Figure 4.1 L1 clusters' ) );
+			meta.appendChild( metaRow( 'Clusters', levelPayload.clusterCount || levelPayload.outlineCount ) );
+			if( levelPayload.validation ) {
+				meta.appendChild( metaRow( 'Membership', levelPayload.validation.ok ? 'valid' : 'invalid' ) );
+			}
 			card.appendChild( meta );
 			const grid = div( 'sequence-grid' );
 			for( const sequence of levelPayload.sequences || [] ) {
@@ -170,6 +364,105 @@
 		}
 	}
 
+	function metatileSequenceList( symbolic ) {
+		const metatile = symbolic.metatileSequences || {};
+		const sequences = [];
+		for( const levelPayload of metatile.levels || [] ) {
+			for( const sequence of levelPayload.sequences || [] ) {
+				if( sequence.languageComplexity && (sequence.languageComplexity.samples || []).length > 0 ) {
+					sequences.push( sequence );
+				}
+			}
+		}
+		return sequences;
+	}
+
+	function renderMetatileLanguageComplexityGraph( symbolic ) {
+		const sequences = metatileSequenceList( symbolic );
+		const card = div( 'card' );
+		const title = document.createElement( 'h2' );
+		title.textContent = 'Metatile Sequence Language Complexity';
+		card.appendChild( title );
+		if( sequences.length === 0 ) {
+			card.appendChild( div( 'empty', 'Load a metatile sequence to show language complexity.' ) );
+			sequencesEl.appendChild( card );
+			return;
+		}
+
+		const body = div( 'graph-card' );
+		const chartWrap = document.createElement( 'div' );
+		const legend = div( 'series-toggles' );
+		for( const sequence of sequences ) {
+			const item = div( 'series-toggle' );
+			const swatch = document.createElement( 'span' );
+			swatch.className = 'series-swatch';
+			swatch.style.backgroundColor = cssColorForSeries( sequence.color );
+			const text = document.createElement( 'span' );
+			const complexity = sequence.languageComplexity || {};
+			text.textContent = `${sequence.label || sequence.id} (${complexity.sampleCount || 0} n values)`;
+			item.append( swatch, text );
+			legend.appendChild( item );
+		}
+		const canvas = document.createElement( 'canvas' );
+		const maxSampleN = sequences.reduce( (max, sequence) =>
+			Math.max( max, (sequence.languageComplexity || {}).sampleCount || 0 ), 0 );
+		if( metatileLanguageComplexityMaxN == null || metatileLanguageComplexityMaxN > maxSampleN ) {
+			metatileLanguageComplexityMaxN = maxSampleN;
+		}
+		const cutoffControls = div( 'level-controls' );
+		const cutoffLabel = document.createElement( 'label' );
+		cutoffLabel.className = 'series-toggle';
+		const cutoffInput = document.createElement( 'input' );
+		cutoffInput.type = 'number';
+		cutoffInput.min = '1';
+		cutoffInput.max = String( maxSampleN );
+		cutoffInput.step = '1';
+		cutoffInput.value = String( metatileLanguageComplexityMaxN || maxSampleN || 1 );
+		const cutoffText = document.createElement( 'span' );
+		cutoffText.textContent = 'Max substring length';
+		cutoffLabel.append( cutoffText, cutoffInput );
+		const applyButton = document.createElement( 'button' );
+		applyButton.type = 'button';
+		applyButton.textContent = 'Redisplay';
+		const resetButton = document.createElement( 'button' );
+		resetButton.type = 'button';
+		resetButton.textContent = 'Show all';
+		function redrawWithInput() {
+			const value = Math.max( 1, Math.min( maxSampleN, Math.floor( Number( cutoffInput.value ) || maxSampleN || 1 ) ) );
+			metatileLanguageComplexityMaxN = value;
+			cutoffInput.value = String( value );
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, metatileLanguageComplexityMaxN ) );
+		}
+		applyButton.addEventListener( 'click', redrawWithInput );
+		cutoffInput.addEventListener( 'keydown', event => {
+			if( event.key === 'Enter' ) {
+				redrawWithInput();
+			}
+		} );
+		resetButton.addEventListener( 'click', () => {
+			metatileLanguageComplexityMaxN = maxSampleN;
+			cutoffInput.value = String( maxSampleN );
+			window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, metatileLanguageComplexityMaxN ) );
+		} );
+		cutoffControls.append( cutoffLabel, applyButton, resetButton );
+		chartWrap.append( legend, cutoffControls, canvas );
+		body.appendChild( chartWrap );
+
+		const meta = div( 'meta-grid' );
+		meta.appendChild( metaRow( 'Definition', 'number of distinct contiguous metatile-token substrings of length n' ) );
+		for( const sequence of sequences ) {
+			const complexity = sequence.languageComplexity || {};
+			meta.appendChild( metaRow(
+				sequence.label || sequence.id,
+				`${complexity.tokenCount || 0} tokens; peak ${complexity.peakValue || 0} at n=${complexity.peakN == null ? 'n/a' : complexity.peakN}`
+			) );
+		}
+		body.appendChild( meta );
+		card.appendChild( body );
+		sequencesEl.appendChild( card );
+		window.requestAnimationFrame( () => drawLanguageComplexityChart( canvas, sequences, metatileLanguageComplexityMaxN ) );
+	}
+
 	function renderSequences( payload ) {
 		clear( sequencesEl );
 		if( !payload || payload.available === false ) {
@@ -178,8 +471,14 @@
 		}
 		const symbolic = payload.symbolic || {};
 		renderHatSequences( symbolic );
-		renderMetatileControls( payload.run || {}, symbolic );
+		renderLanguageComplexityGraph( symbolic, payload.run || {} );
 		renderMetatileSequences( symbolic );
+		renderMetatileLanguageComplexityGraph( symbolic );
+	}
+
+	function hasMetatileSequences( payload ) {
+		const metatile = payload && payload.symbolic && payload.symbolic.metatileSequences;
+		return !!(metatile && Array.isArray( metatile.levels ) && metatile.levels.length > 0);
 	}
 
 	function niceTickStep( range, targetTicks ) {
@@ -802,6 +1101,46 @@
 		}
 	}
 
+	async function loadMetatileSequencesForLatest() {
+		if( !latestPayload || latestPayload.available === false || hasMetatileSequences( latestPayload ) ) {
+			return;
+		}
+		const runId = latestPayload.runId || 'latest';
+		if( metatileSequenceRequestRunId === runId ) {
+			return;
+		}
+		metatileSequenceRequestRunId = runId;
+		renderSequences( latestPayload );
+		statusEl.classList.remove( 'error' );
+		statusEl.textContent = `Latest run ${latestPayload.runId} at ${latestPayload.timestamp}; building metatile sequence`;
+		try {
+			const response = await fetch( '/api/diagnostics/metatile-sequence', {
+				method: 'POST',
+				cache: 'no-store',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify( {} )
+			} );
+			if( !response.ok ) {
+				throw new Error( `HTTP ${response.status}` );
+			}
+			const result = await response.json();
+			if( result.available === false ) {
+				throw new Error( result.error || 'Metatile sequences are unavailable.' );
+			}
+			if( latestPayload && latestPayload.runId === runId ) {
+				latestPayload.symbolic = latestPayload.symbolic || {};
+				latestPayload.symbolic.metatileSequences = result;
+				latestETag = null;
+				metatileSequenceRequestRunId = null;
+				renderPayload( latestPayload );
+			}
+		} catch( err ) {
+			statusEl.textContent = `Could not build metatile sequence: ${err.message || String( err )}`;
+			statusEl.classList.add( 'error' );
+			metatileSequenceRequestRunId = null;
+		}
+	}
+
 	async function saveLatestDiagnostics() {
 		if( !latestPayload || latestPayload.available === false ) {
 			return;
@@ -828,48 +1167,6 @@
 			statusEl.classList.add( 'error' );
 		} finally {
 			saveButton.disabled = !(latestPayload && latestPayload.available !== false);
-		}
-	}
-
-	async function loadSelectedMetatileSequences() {
-		if( !latestPayload || latestPayload.available === false ) {
-			return;
-		}
-		const levels = [...selectedMetatileLevels].sort( (a, b) => a - b );
-		if( levels.length === 0 ) {
-			latestPayload.symbolic = latestPayload.symbolic || {};
-			latestPayload.symbolic.metatileSequences = {
-				available: true,
-				maxLevel: latestPayload.run ? latestPayload.run.level : 1,
-				levels: []
-			};
-			renderSequences( latestPayload );
-			return;
-		}
-		statusEl.textContent = `Loading metatile L${levels.join( ', L' )} sequences...`;
-		try {
-			const response = await fetch( '/api/diagnostics/metatile-sequence', {
-				method: 'POST',
-				cache: 'no-store',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify( { levels } )
-			} );
-			if( !response.ok ) {
-				throw new Error( `HTTP ${response.status}` );
-			}
-			const result = await response.json();
-			if( result.available === false ) {
-				throw new Error( result.error || 'Metatile sequences are unavailable.' );
-			}
-			latestPayload.symbolic = latestPayload.symbolic || {};
-			latestPayload.symbolic.metatileSequences = result;
-			latestETag = null;
-			statusEl.classList.remove( 'error' );
-			statusEl.textContent = `Loaded metatile L${levels.join( ', L' )} sequences`;
-			renderSequences( latestPayload );
-		} catch( err ) {
-			statusEl.textContent = `Could not load metatile sequences: ${err.message || String( err )}`;
-			statusEl.classList.add( 'error' );
 		}
 	}
 

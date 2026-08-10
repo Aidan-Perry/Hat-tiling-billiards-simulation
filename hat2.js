@@ -49,6 +49,7 @@ let blue_trajectory_enabled = false;
 let ui_elements = [];
 let blue_control_elements = [];
 let blue_controls_height = 0;
+const show_root_selector = false;
 const metatile_outline_cache = new Map();
 const simulator_base_level = 1;
 const simulator_max_level = 6;
@@ -2157,7 +2158,11 @@ function setup() {
 		};
 	}
 	radio.selected( 'H' );
-	box_height += 40;
+	if( show_root_selector ) {
+		box_height += 40;
+	} else {
+		radio.hide();
+	}
 
     	// CHATGPT: Create Translate and Scale mode buttons.
 	// CHATGPT: These modes determine how mouse dragging affects the view.

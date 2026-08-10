@@ -561,6 +561,96 @@ function buildUnsortedVertexClearanceGraphDiagnostics( results ) {
 	};
 }
 
+class SuffixAutomaton {
+	constructor() {
+		this.states = [{ len: 0, link: -1, next: new Map() }];
+		this.last = 0;
+	}
+
+	extend( token ) {
+		const cur = this.states.length;
+		this.states.push( { len: this.states[this.last].len + 1, link: 0, next: new Map() } );
+		let p = this.last;
+		while( p !== -1 && !this.states[p].next.has( token ) ) {
+			this.states[p].next.set( token, cur );
+			p = this.states[p].link;
+		}
+		if( p === -1 ) {
+			this.states[cur].link = 0;
+		} else {
+			const q = this.states[p].next.get( token );
+			if( this.states[p].len + 1 === this.states[q].len ) {
+				this.states[cur].link = q;
+			} else {
+				const clone = this.states.length;
+				this.states.push( {
+					len: this.states[p].len + 1,
+					link: this.states[q].link,
+					next: new Map( this.states[q].next )
+				} );
+				while( p !== -1 && this.states[p].next.get( token ) === q ) {
+					this.states[p].next.set( token, clone );
+					p = this.states[p].link;
+				}
+				this.states[q].link = clone;
+				this.states[cur].link = clone;
+			}
+		}
+		this.last = cur;
+	}
+}
+
+function languageComplexityDiagnostics( tokens, bounceCount ) {
+	const maxN = Math.max( 0, Math.floor( bounceCount == null ? tokens.length : bounceCount ) );
+	const automaton = new SuffixAutomaton();
+	for( const token of tokens ) {
+		automaton.extend( token );
+	}
+	const diff = new Int32Array( maxN + 2 );
+	for( let idx = 1; idx < automaton.states.length; ++idx ) {
+		const state = automaton.states[idx];
+		const parent = automaton.states[state.link];
+		const lo = parent.len + 1;
+		const hi = Math.min( state.len, maxN );
+		if( lo <= hi ) {
+			diff[lo] += 1;
+			diff[hi + 1] -= 1;
+		}
+	}
+	const samples = [];
+	let running = 0;
+	let peakN = null;
+	let peakValue = 0;
+	for( let n = 1; n <= maxN; ++n ) {
+		running += diff[n];
+		samples.push( { n, uniqueSubstringCount: running } );
+		if( running > peakValue ) {
+			peakN = n;
+			peakValue = running;
+		}
+	}
+	return {
+		bounceCount: maxN,
+		tokenCount: tokens.length,
+		sampleCount: samples.length,
+		peakN,
+		peakValue,
+		samples
+	};
+}
+
+function hatVisitStats( result ) {
+	const visitedHatCount = Array.isArray( result.focusTileIds ) ?
+		new Set( result.focusTileIds.filter( id => id != null ) ).size : 0;
+	const bounceCount = result.crossings && Array.isArray( result.crossings ) ?
+		result.crossings.length : 0;
+	return {
+		visitedHatCount,
+		bounceCount,
+		hatsPerBounce: bounceCount > 0 ? visitedHatCount / bounceCount : null
+	};
+}
+
 function buildHatCuttingSequenceDiagnostics( results ) {
 	return (results || []).map( (result, idx) => {
 		const entries = (result.crossings || []).map( (crossing, crossingIdx) => ( {
@@ -579,6 +669,10 @@ function buildHatCuttingSequenceDiagnostics( results ) {
 			type: 'hat-edge',
 			count: entries.length,
 			tokens: entries.map( entry => entry.symbol ),
+			hatVisitStats: hatVisitStats( result ),
+			languageComplexity: languageComplexityDiagnostics(
+				entries.map( entry => entry.symbol ),
+				entries.length ),
 			entries
 		};
 	} );
@@ -728,6 +822,314 @@ function metatileAnalysisForLevel( level ) {
 		cache.levels.set( level, buildMetatileAnalysisForLevel( tiling, level ) );
 	}
 	return cache.levels.get( level );
+}
+
+const FIGURE_4_1_EXPECTED_CLUSTER_HATS = { T: 1, H: 4, P: 2, F: 2 };
+
+function vCoord( x, y ) {
+	return { x: Math.sqrt( 0.75 ) * x, y: 0.5 * x + y };
+}
+
+function labelledSegment( label, ax, ay, bx, by ) {
+	return { label, a: vCoord( ax, ay ), b: vCoord( bx, by ) };
+}
+
+const FIGURE_4_1_CANONICAL_OUTLINES = {
+	T: [[0, 0], [3, 0], [0, 3]].map( point => vCoord( point[0], point[1] ) ),
+	H: [[0, 0], [1, -1], [5, -1], [5, 0], [1, 4], [0, 4]]
+		.map( point => vCoord( point[0], point[1] ) ),
+	P: [[0, 0], [2, -2], [6, -2], [4, 0]].map( point => vCoord( point[0], point[1] ) ),
+	F: [[0, 0], [2, -2], [5, -2], [5, -1], [4, 0]].map( point => vCoord( point[0], point[1] ) )
+};
+
+const FIGURE_4_1_LABELLED_SEGMENTS = {
+	T: [
+		labelledSegment( 'A-', 0, 0, 3, 0 ),
+		labelledSegment( 'A-', 3, 0, 0, 3 ),
+		labelledSegment( 'B+', 0, 3, 0, 0 )
+	],
+	H: [
+		labelledSegment( 'X+', 0, 0, 1, -1 ),
+		labelledSegment( 'B-', 1, -1, 4, -1 ),
+		labelledSegment( 'X-', 4, -1, 5, -1 ),
+		labelledSegment( 'X+', 5, -1, 5, 0 ),
+		labelledSegment( 'B-', 5, 0, 2, 3 ),
+		labelledSegment( 'X-', 2, 3, 1, 4 ),
+		labelledSegment( 'X+', 1, 4, 0, 4 ),
+		labelledSegment( 'A+', 0, 4, 0, 1 ),
+		labelledSegment( 'X-', 0, 1, 0, 0 )
+	],
+	P: [
+		labelledSegment( 'L', 0, 0, 1, -1 ),
+		labelledSegment( 'X-', 1, -1, 2, -2 ),
+		labelledSegment( 'X+', 2, -2, 3, -2 ),
+		labelledSegment( 'A-', 3, -2, 6, -2 ),
+		labelledSegment( 'L', 6, -2, 5, -1 ),
+		labelledSegment( 'X-', 5, -1, 4, 0 ),
+		labelledSegment( 'X+', 4, 0, 3, 0 ),
+		labelledSegment( 'B+', 3, 0, 0, 0 )
+	],
+	F: [
+		labelledSegment( 'L', 0, 0, 1, -1 ),
+		labelledSegment( 'X-', 1, -1, 2, -2 ),
+		labelledSegment( 'X+', 2, -2, 3, -2 ),
+		labelledSegment( 'L', 3, -2, 4, -2 ),
+		labelledSegment( 'X-', 4, -2, 5, -2 ),
+		labelledSegment( 'F+', 5, -2, 5, -1 ),
+		labelledSegment( 'F-', 5, -1, 4, 0 ),
+		labelledSegment( 'X+', 4, 0, 3, 0 ),
+		labelledSegment( 'B+', 3, 0, 0, 0 )
+	]
+};
+
+const FIGURE_4_1_PREFERRED_ALIGNMENT = {
+	T: { reversed: false, offset: 0 },
+	H: { reversed: false, offset: 3 },
+	P: { reversed: false, offset: 1 },
+	F: { reversed: false, offset: 1 }
+};
+
+function isLeafHat( geom ) {
+	return !geom || !geom.children;
+}
+
+function isL1ClusterGeom( geom ) {
+	return !!(geom && geom.children && geom.children.length > 0 &&
+		geom.children.every( child => isLeafHat( child.geom ) ));
+}
+
+function affineFromThreePoints( from, to ) {
+	const p0 = from[0];
+	const p1 = from[1];
+	const p2 = from[2];
+	const q0 = to[0];
+	const q1 = to[1];
+	const q2 = to[2];
+	const ux = p1.x - p0.x;
+	const uy = p1.y - p0.y;
+	const vx = p2.x - p0.x;
+	const vy = p2.y - p0.y;
+	const Ux = q1.x - q0.x;
+	const Uy = q1.y - q0.y;
+	const Vx = q2.x - q0.x;
+	const Vy = q2.y - q0.y;
+	const det = ux * vy - vx * uy;
+	if( Math.abs( det ) <= 1e-12 ) {
+		return null;
+	}
+	const a = (Ux * vy - Vx * uy) / det;
+	const b = (Vx * ux - Ux * vx) / det;
+	const d = (Uy * vy - Vy * uy) / det;
+	const e = (Vy * ux - Uy * vx) / det;
+	const c = q0.x - a * p0.x - b * p0.y;
+	const f = q0.y - d * p0.x - e * p0.y;
+	return [a, b, c, d, e, f];
+}
+
+function affineError( T, from, to ) {
+	let error = 0;
+	for( let idx = 0; idx < from.length; ++idx ) {
+		error = Math.max( error, pointDistance( ctx.transPt( T, from[idx] ), to[idx] ) );
+	}
+	return error;
+}
+
+function canonicalToWorldTransform( clusterLabel, polygon ) {
+	const canonical = FIGURE_4_1_CANONICAL_OUTLINES[clusterLabel];
+	if( !canonical || canonical.length !== polygon.length ) {
+		return null;
+	}
+	const candidates = [];
+	for( const reversed of [false, true] ) {
+		for( let offset = 0; offset < canonical.length; ++offset ) {
+			const ordered = canonical.map( (_, idx) => {
+				const sourceIdx = reversed ?
+					(offset - idx + canonical.length) % canonical.length :
+					(offset + idx) % canonical.length;
+				return canonical[sourceIdx];
+			} );
+			const T = affineFromThreePoints( ordered.slice( 0, 3 ), polygon.slice( 0, 3 ) );
+			if( T ) {
+				candidates.push( {
+					T,
+					reversed,
+					offset,
+					error: affineError( T, ordered, polygon )
+				} );
+			}
+		}
+	}
+	const preferred = FIGURE_4_1_PREFERRED_ALIGNMENT[clusterLabel];
+	if( preferred ) {
+		const candidate = candidates.find( item =>
+			item.error <= 1e-8 &&
+			item.reversed === preferred.reversed &&
+			item.offset === preferred.offset );
+		if( candidate ) {
+			return candidate.T;
+		}
+	}
+	candidates.sort( (a, b) => a.error - b.error );
+	return candidates.length > 0 ? candidates[0].T : null;
+}
+
+function nearestLabelledSegment( clusterLabel, canonicalEdge, eps ) {
+	let best = null;
+	const edgeVector = pointSub( canonicalEdge.b, canonicalEdge.a );
+	const edgeLength = pointDistance( canonicalEdge.a, canonicalEdge.b );
+	const midpoint = pointScale( pointAdd( canonicalEdge.a, canonicalEdge.b ), 0.5 );
+	for( const segment of FIGURE_4_1_LABELLED_SEGMENTS[clusterLabel] || [] ) {
+		const sideVector = pointSub( segment.b, segment.a );
+		const sideLength = pointDistance( segment.a, segment.b );
+		if( !(sideLength > 0) || !(edgeLength > 0) ) {
+			continue;
+		}
+		const sideDot = Math.abs( dot2( sideVector, edgeVector ) / (sideLength * edgeLength) );
+		if( sideDot <= eps ) {
+			continue;
+		}
+		const offset = pointSub( midpoint, segment.a );
+		const distance = Math.abs( cross2( sideVector, offset ) ) / sideLength;
+		const t = dot2( offset, sideVector ) / (sideLength * sideLength);
+		const score = distance + Math.max( 0, -t, t - 1 ) * sideLength;
+		if( !best || score < best.score ) {
+			best = {
+				label: segment.label,
+				t,
+				distance,
+				score
+			};
+		}
+	}
+	return best;
+}
+
+function extractL1Clusters( tiling ) {
+	const clusters = [];
+	const clusterOfHat = new Map();
+	let nextHatId = 0;
+
+	function traverse( geom, T, activeCluster ) {
+		if( isLeafHat( geom ) ) {
+			const tileId = nextHatId++;
+			if( activeCluster ) {
+				activeCluster.hatIds.push( tileId );
+				clusterOfHat.set( tileId, activeCluster.id );
+			}
+			return;
+		}
+		if( isL1ClusterGeom( geom ) ) {
+			const cluster = {
+				id: clusters.length,
+				label: inferMetatileLabel( geom ),
+				hatIds: [],
+				polygon: transformedShape( geom.shape, T )
+			};
+			clusters.push( cluster );
+			for( const child of geom.children ) {
+				traverse( child.geom, ctx.mul( T, child.T ), cluster );
+			}
+			return;
+		}
+		for( const child of geom.children || [] ) {
+			traverse( child.geom, ctx.mul( T, child.T ), activeCluster );
+		}
+	}
+
+	traverse( tiling.root, tiling.rootTransform || ctx.ident, null );
+	const validation = {
+		ok: true,
+		hatCount: tiling.tiles.length,
+		assignedHatCount: clusterOfHat.size,
+		clusterCount: clusters.length,
+		errors: []
+	};
+	if( nextHatId !== tiling.tiles.length || clusterOfHat.size !== tiling.tiles.length ) {
+		validation.ok = false;
+		validation.errors.push(
+			`assigned ${clusterOfHat.size} of ${tiling.tiles.length} hats while traversing ${nextHatId}` );
+	}
+	for( const cluster of clusters ) {
+		const expected = FIGURE_4_1_EXPECTED_CLUSTER_HATS[cluster.label];
+		if( expected != null && cluster.hatIds.length !== expected ) {
+			validation.ok = false;
+			validation.errors.push(
+				`cluster ${cluster.id} ${cluster.label} has ${cluster.hatIds.length} hats; expected ${expected}` );
+		}
+	}
+	return { clusters, clusterOfHat, validation };
+}
+
+function buildL1ClusterAnalysis( tiling ) {
+	const extracted = extractL1Clusters( tiling );
+	const tol = tiling && tiling.tolerances ? tiling.tolerances : ctx.HatBilliards.tolerances();
+	const eps = tol.EPS * 1000;
+	const sideByHatEdge = new Map();
+	const validation = Object.assign( { sideMappedEdgeCount: 0 }, extracted.validation );
+
+	for( const cluster of extracted.clusters ) {
+		const members = new Set( cluster.hatIds );
+		const canonicalToWorld = canonicalToWorldTransform( cluster.label, cluster.polygon );
+		const worldToCanonical = canonicalToWorld ? ctx.inv( canonicalToWorld ) : null;
+		if( !worldToCanonical ) {
+			validation.ok = false;
+			validation.errors.push( `could not align cluster ${cluster.id} ${cluster.label} to Figure 4.1 coordinates` );
+			continue;
+		}
+		for( const tileId of cluster.hatIds ) {
+			const tile = tiling.tiles[tileId];
+			if( !tile ) {
+				validation.ok = false;
+				validation.errors.push( `cluster ${cluster.id} references missing hat ${tileId}` );
+				continue;
+			}
+			for( const edge of tile.edges ) {
+				const link = tile.adjacent[edge.index];
+				if( link && members.has( link.tileId ) ) {
+					continue;
+				}
+				const canonicalEdge = {
+					a: ctx.transPt( worldToCanonical, edge.a ),
+					b: ctx.transPt( worldToCanonical, edge.b )
+				};
+				const side = nearestLabelledSegment( cluster.label, canonicalEdge, 1e-6 );
+				if( !side || !side.label ) {
+					validation.ok = false;
+					validation.errors.push(
+						`unmapped boundary edge ${tileId}:${edge.index} in cluster ${cluster.id} ${cluster.label}` );
+					continue;
+				}
+				sideByHatEdge.set( `${tileId}:${edge.index}`, {
+					clusterId: cluster.id,
+					clusterLabel: cluster.label,
+					sideLabel: side.label,
+					t: side.t
+				} );
+				validation.sideMappedEdgeCount += 1;
+			}
+		}
+	}
+
+	return {
+		type: 'figure-4-1-l1-clusters',
+		metatileLevel: 1,
+		clusters: extracted.clusters,
+		clusterOfHat: extracted.clusterOfHat,
+		sideByHatEdge,
+		validation
+	};
+}
+
+function l1ClusterAnalysis() {
+	const cache = latestMetatileCacheForSource();
+	if( !cache ) {
+		return null;
+	}
+	if( !cache.l1ClusterAnalysis ) {
+		const tiling = latestDiagnosticsSourceValue.results[0].tiling;
+		cache.l1ClusterAnalysis = buildL1ClusterAnalysis( tiling );
+	}
+	return cache.l1ClusterAnalysis;
 }
 
 function segmentIntersection( p, q, a, b, eps, tEps ) {
@@ -960,7 +1362,7 @@ function enforceMetatileContinuity( transitions, analysis ) {
 	return entries;
 }
 
-function buildMetatileSequenceForResult( result, analysis, metatileLevel ) {
+function buildLegacyMetatileSequenceForResult( result, analysis, metatileLevel ) {
 	const points = result.points || [];
 	const eps = result.tiling && result.tiling.tolerances ?
 		result.tiling.tolerances.EPS * 1000 : 1e-7;
@@ -1059,6 +1461,92 @@ function buildMetatileSequenceForResult( result, analysis, metatileLevel ) {
 	};
 }
 
+function clusterTransitionToken( entry ) {
+	const from = entry.fromClusterId == null || !entry.fromSideLabel ?
+		'?' : `${entry.fromClusterLabel}:${entry.fromSideLabel}`;
+	const to = entry.toClusterId == null || !entry.toSideLabel ?
+		'?' : `${entry.toClusterLabel}:${entry.toSideLabel}`;
+	return `${from}->${to}`;
+}
+
+function buildMetatileSequenceForResult( result, analysis ) {
+	const entries = [];
+	for( const [crossingIdx, crossing] of (result.crossings || []).entries() ) {
+		const fromClusterId = analysis.clusterOfHat.get( crossing.fromTileId );
+		const toClusterId = crossing.toTileId == null ? null :
+			analysis.clusterOfHat.get( crossing.toTileId );
+		if( fromClusterId == null || toClusterId == null || fromClusterId === toClusterId ) {
+			continue;
+		}
+		const fromCluster = analysis.clusters[fromClusterId] || null;
+		const toCluster = analysis.clusters[toClusterId] || null;
+		const fromSide = analysis.sideByHatEdge.get( `${crossing.fromTileId}:${crossing.edgeIndex}` ) || null;
+		const toSide = crossing.nextEdgeIndex == null ? null :
+			analysis.sideByHatEdge.get( `${crossing.toTileId}:${crossing.nextEdgeIndex}` ) || null;
+		const entry = {
+			kind: 'cluster-transition',
+			bounce: crossingIdx + 1,
+			fromTileId: crossing.fromTileId,
+			toTileId: crossing.toTileId,
+			edgeIndex: crossing.edgeIndex,
+			nextEdgeIndex: crossing.nextEdgeIndex == null ? null : crossing.nextEdgeIndex,
+			fromClusterId,
+			toClusterId,
+			fromClusterLabel: fromCluster ? fromCluster.label : null,
+			toClusterLabel: toCluster ? toCluster.label : null,
+			fromSideLabel: fromSide ? fromSide.sideLabel : null,
+			toSideLabel: toSide ? toSide.sideLabel : null,
+			point: clonePoint( crossing.point ),
+			u: crossing.u,
+			ambiguous: !fromSide || !toSide
+		};
+		entry.symbol = clusterTransitionToken( entry );
+		entries.push( entry );
+	}
+	const ambiguousCount = entries.filter( entry => entry.ambiguous ).length;
+	return {
+		id: result.color || 'trajectory',
+		color: result.color || 'red',
+		label: result.color || 'trajectory',
+		type: 'metatile-boundary',
+		metatileLevel: 1,
+		outlineCount: analysis.clusters.length,
+		clusterCount: analysis.clusters.length,
+		count: entries.length,
+		transitionCount: entries.length,
+		gapCount: 0,
+		ambiguousCount,
+		tokens: entries.map( entry => entry.symbol ),
+		entries,
+		languageComplexity: languageComplexityDiagnostics(
+			entries.map( entry => entry.symbol ),
+			entries.length )
+	};
+}
+
+function buildL1MetatileCuttingSequenceDiagnostics() {
+	if( !latestDiagnosticsSourceValue || !latestDiagnosticsSourceValue.results || latestDiagnosticsSourceValue.results.length === 0 ) {
+		return { available: false, levels: [], error: 'No trajectory diagnostics are available.' };
+	}
+	const analysis = l1ClusterAnalysis();
+	const results = latestDiagnosticsSourceValue.results;
+	const payload = {
+		level: 1,
+		label: 'Figure 4.1 L1 clusters',
+		outlineCount: analysis.clusters.length,
+		clusterCount: analysis.clusters.length,
+		validation: analysis.validation,
+		sequences: results.map( result => buildMetatileSequenceForResult( result, analysis ) )
+	};
+	return {
+		available: true,
+		maxLevel: 1,
+		mode: 'figure-4-1-l1-clusters',
+		levels: [payload],
+		validation: analysis.validation
+	};
+}
+
 function buildMetatileCuttingSequenceDiagnostics( levels ) {
 	if( !latestDiagnosticsSourceValue || !latestDiagnosticsSourceValue.results || latestDiagnosticsSourceValue.results.length === 0 ) {
 		return { available: false, levels: [], error: 'No trajectory diagnostics are available.' };
@@ -1081,7 +1569,7 @@ function buildMetatileCuttingSequenceDiagnostics( levels ) {
 			level,
 			outlineCount: analysis.outlines.length,
 			sequences: results.map( result =>
-				buildMetatileSequenceForResult( result, analysis, level ) )
+				buildLegacyMetatileSequenceForResult( result, analysis, level ) )
 		};
 		if( cache ) {
 			cache.sequences.set( sequenceKey, payload );
@@ -1122,6 +1610,7 @@ function buildDiagnosticsPayload( req, specs, results ) {
 				status: result.status,
 				pointCount: result.points.length,
 				crossingCount: result.crossings.length,
+				hatVisitStats: hatVisitStats( result ),
 				startEdge: specs[idx] ? specs[idx].startEdge : result.requestedStartEdge,
 				edgeParameter: specs[idx] ? specs[idx].edgeParameter : result.requestedEdgeParameter,
 				angleDegrees: specs[idx] ? specs[idx].angleDegrees : result.requestedAngleDegrees,
@@ -1133,7 +1622,8 @@ function buildDiagnosticsPayload( req, specs, results ) {
 			hatSequences: buildHatCuttingSequenceDiagnostics( publicResults ),
 			metatileSequences: {
 				available: true,
-				maxLevel: req.level,
+				maxLevel: 1,
+				mode: 'figure-4-1-l1-clusters',
 				levels: []
 			}
 		},
@@ -1176,7 +1666,7 @@ function attachMetatileCuttingSequences( levels ) {
 	if( !latestDiagnosticsPayloadValue || latestDiagnosticsPayloadValue.available === false ) {
 		return { available: false, error: 'No diagnostics are available.' };
 	}
-	const metatileSequences = buildMetatileCuttingSequenceDiagnostics( levels );
+	const metatileSequences = buildL1MetatileCuttingSequenceDiagnostics();
 	latestDiagnosticsPayloadValue.symbolic = latestDiagnosticsPayloadValue.symbolic || {};
 	latestDiagnosticsPayloadValue.symbolic.metatileSequences = metatileSequences;
 	updateLatestDiagnosticsJSON();
