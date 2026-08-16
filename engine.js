@@ -427,15 +427,39 @@
 			return preferred.id;
 		}
 		const candidates = spatialIndexCandidates( tiling._tileSpatialIndex, point );
-		if( candidates && candidates.length > 0 ) {
+		if( candidates ) {
 			for( const id of candidates ) {
 				const tile = tiling.tiles[id];
 				if( tile && pointInPolygon( point, tile.polygon, eps ) ) {
 					return tile.id;
 				}
 			}
+			return null;
 		}
 		return legacyLocateTileContaining( tiling, point, preferredId );
+	}
+
+	function locateNeighborTileContaining( tiling, point, currentTileId ) {
+		const eps = tiling.tolerances.EPS * 100;
+		const candidates = spatialIndexCandidates( tiling._tileSpatialIndex, point );
+		if( candidates ) {
+			for( const id of candidates ) {
+				if( id === currentTileId ) {
+					continue;
+				}
+				const tile = tiling.tiles[id];
+				if( tile && pointInPolygon( point, tile.polygon, eps ) ) {
+					return tile.id;
+				}
+			}
+			return null;
+		}
+		for( const tile of tiling.tiles ) {
+			if( tile.id !== currentTileId && pointInPolygon( point, tile.polygon, eps ) ) {
+				return tile.id;
+			}
+		}
+		return null;
 	}
 
 	function verifyLocateTileIndex( tiling, options ) {
@@ -519,7 +543,7 @@
 		const probeDistance = state.tiling.tolerances.edgeLength * 1e-6;
 		for( const candidate of candidates ) {
 			const probe = add( hit.point, scale( candidate, probeDistance ) );
-			const tileId = locateTileContaining( state.tiling, probe, null );
+			const tileId = locateNeighborTileContaining( state.tiling, probe, tile.id );
 			if( tileId != null && tileId !== tile.id ) {
 				return {
 					tileId,
