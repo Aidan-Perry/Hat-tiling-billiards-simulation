@@ -98,7 +98,6 @@ These generated outputs are ignored by Git by default:
 
 - `Diagnostics/`
 - `Experiments/`
-- `traj.txt`
 - `hat-billiards-trajectory-*.json`
 
 The source code does not require these files to run. If you want to publish
