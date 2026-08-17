@@ -12,7 +12,7 @@ const DEFAULTS = {
 	trajectoryCount: 300,
 	maxBounces: 1000,
 	maxN: 15,
-	seed: 'hatviz-global-language-2026-08-10',
+	seed: 'hat-billiards-global-language-2026-08-10',
 	interiorMinFraction: 0.1,
 	interiorMaxFraction: 0.6,
 	maxAttempts: 3000,
@@ -36,6 +36,8 @@ function parseArgs( argv ) {
 			config.maxBounces = parseIntOption( arg, next() );
 		} else if( arg === '--max-n' ) {
 			config.maxN = parseIntOption( arg, next() );
+		} else if( arg === '--max-attempts' ) {
+			config.maxAttempts = parseIntOption( arg, next() );
 		} else if( arg === '--seed' ) {
 			config.seed = next();
 		} else if( arg === '--output' ) {
@@ -43,7 +45,8 @@ function parseArgs( argv ) {
 		} else if( arg === '--help' || arg === '-h' ) {
 			console.log(
 				'Usage: node --max-old-space-size=12288 run-global-language-complexity-estimate.js ' +
-				'[--trajectories 300] [--bounces 1000] [--max-n 15] [--output PATH]' );
+				'[--trajectories 300] [--bounces 1000] [--max-n 15] ' +
+				'[--max-attempts 3000] [--output PATH]' );
 			process.exit( 0 );
 		} else {
 			throw new Error( `Unknown option: ${arg}` );
@@ -97,7 +100,7 @@ function loadEngineContext() {
 	};
 	context.globalThis = context;
 	vm.createContext( context );
-	for( const file of ['geometry.js', 'hat2.js', 'engine.js'] ) {
+	for( const file of ['geometry.js', 'tiling.js', 'engine.js'] ) {
 		const code = fs.readFileSync( path.join( ROOT, file ), 'utf8' );
 		vm.runInContext( code, context, { filename: file } );
 	}
@@ -212,7 +215,7 @@ function run( config ) {
 	const fit3 = fitPowerLaw( rows, 3 );
 	const fit5 = fitPowerLaw( rows, 5 );
 	const lines = [
-		'# format: hatviz-global-language-complexity-tsv',
+		'# format: hat-billiards-global-language-complexity-tsv',
 		'# version: 1',
 		`# root_type: ${config.rootType}`,
 		`# level: ${config.level}`,

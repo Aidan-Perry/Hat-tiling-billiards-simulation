@@ -1,7 +1,7 @@
 #!/bin/zsh
 cd "$(dirname "$0")"
 
-echo "Starting Hatviz local compute server..."
+echo "Starting Hat Tiling Billiards Simulation local compute server..."
 echo "Leave this window open while using the app."
 echo "Press Control-C here to stop the server."
 echo

@@ -14,7 +14,7 @@ const DEFAULTS = {
 	angleStart: 0.0,
 	angleEnd: 359.9,
 	angleStep: 0.1,
-	seed: 'hatviz-hpb-2026-08-10',
+	seed: 'hat-billiards-hpb-2026-08-10',
 	minEdgeParameter: 0.05,
 	maxEdgeParameter: 0.95,
 	depthSlack: 2,
@@ -210,7 +210,7 @@ function loadEngineContext() {
 	};
 	context.globalThis = context;
 	vm.createContext( context );
-	for( const file of ['geometry.js', 'hat2.js', 'engine.js'] ) {
+	for( const file of ['geometry.js', 'tiling.js', 'engine.js'] ) {
 		const code = fs.readFileSync( path.join( ROOT, file ), 'utf8' );
 		vm.runInContext( code, context, { filename: file } );
 	}
@@ -479,7 +479,7 @@ function buildMainHeader( config, angles, decimals, starts, summary, tiling ) {
 		);
 	}
 	return [
-		'# format: hatviz-hats-per-bounce-tsv',
+		'# format: hat-billiards-hats-per-bounce-tsv',
 		'# version: 1',
 		`# root_type: ${config.rootType}`,
 		`# level: ${config.level}`,
@@ -512,7 +512,7 @@ function buildDiscardedHeader( config, angles, decimals, starts, summary ) {
 	const firstAngle = angles.length > 0 ? angles[0].label : 'n/a';
 	const lastAngle = angles.length > 0 ? angles[angles.length - 1].label : 'n/a';
 	return [
-		'# format: hatviz-hats-per-bounce-discarded-tsv',
+		'# format: hat-billiards-hats-per-bounce-discarded-tsv',
 		'# version: 1',
 		`# root_type: ${config.rootType}`,
 		`# level: ${config.level}`,

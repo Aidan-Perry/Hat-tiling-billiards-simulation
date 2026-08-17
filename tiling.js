@@ -1,27 +1,32 @@
-// CHATGPT: Global transform from model coordinates to screen coordinates.
-// CHATGPT: This is a 2D affine transform stored as [a, b, c, d, e, f],
-// CHATGPT: meaning x' = a*x + b*y + c and y' = d*x + e*y + f.
+// Browser visualizer and hat substitution rules.
+//
+// The hat/metatile construction descends from Craig S. Kaplan's hatviz
+// visualizer. This file also contains the browser UI, trajectory controls,
+// drawing, and import/export helpers for the billiards simulation.
+
+// Global transform from model coordinates to screen coordinates.
+// This is a 2D affine transform stored as [a, b, c, d, e, f],
+// meaning x' = a*x + b*y + c and y' = d*x + e*y + f.
 let to_screen = [20, 0, 0, 0, -20, 0];
 
-// CHATGPT: Line-width scale factor. This is adjusted during zooming so strokes
-// CHATGPT: stay visually proportional.
+// Line-width scale factor. This is adjusted during zooming so strokes
+// stay visually proportional.
 let lw_scale = 1;
 
-// CHATGPT: `tiles` will hold the current four metatiles [H, T, P, F].
+// `tiles` will hold the current four metatiles [H, T, P, F].
 let tiles;
 
-// CHATGPT: Current substitution depth. Starts at 1 and increments when
-// CHATGPT: "Build Supertiles" is clicked.
+// Current substitution depth. Starts at 1 and increments when
+// "Build Supertiles" is clicked.
 let level;
 
-// CHATGPT: Variables used while scaling/zooming by mouse drag.
+// Variables used while scaling/zooming by mouse drag.
 let scale_centre;
 let scale_start;
 let scale_ts;
 
-// CHATGPT: p5.js UI elements. These become actual buttons/radio controls in setup().
+// p5.js UI elements. These become actual buttons/radio controls in setup().
 let reset_button;
-let subst_button;
 let translate_button;
 let scale_button;
 let draw_hats;
@@ -54,20 +59,20 @@ const metatile_outline_cache = new Map();
 const simulator_base_level = 1;
 const simulator_max_level = 6;
 
-// CHATGPT: Mouse/UI state flags.
+// Mouse/UI state flags.
 let dragging = false;
 let uibox = true;
 
-// CHATGPT: Height of the UI panel. Increased as controls are added.
+// Height of the UI panel. Increased as controls are added.
 let box_height = 10;
 
-// CHATGPT: Counter used to create unique SVG IDs.
+// Counter used to create unique SVG IDs.
 let svg_serial = 0;
 
-// CHATGPT: p5.js color object for black. Assigned in setup().
+// p5.js color object for black. Assigned in setup().
 let black;
 
-// CHATGPT: Generate a unique SVG element id like t00000, t00001, ...
+// Generate a unique SVG element id like t00000, t00001, ...
 function getSVGID()
 {
 	const ret = 't' + String(svg_serial).padStart( 5, '0' );
@@ -75,10 +80,10 @@ function getSVGID()
 	return ret;
 }
 
-// CHATGPT: Draw a polygon to the p5.js canvas.
-// CHATGPT: `shape` is an array of points.
-// CHATGPT: `T` is the affine transform applied to each point before drawing.
-// CHATGPT: `f` is fill color or null, `s` is stroke color or null, `w` is stroke width.
+// Draw a polygon to the p5.js canvas.
+// `shape` is an array of points.
+// `T` is the affine transform applied to each point before drawing.
+// `f` is fill color or null, `s` is stroke color or null, `w` is stroke width.
 function drawPolygon( shape, T, f, s, w )
 {
 	if( f != null ) {
@@ -94,15 +99,15 @@ function drawPolygon( shape, T, f, s, w )
 	}
 	beginShape();
 	for( let p of shape ) {
-		// CHATGPT: transPt(T, p) applies affine transform T to point p.
+		// transPt(T, p) applies affine transform T to point p.
 		const tp = transPt( T, p );
 		vertex( tp.x, tp.y );
 	}
 	endShape( CLOSE );
 }
 
-// CHATGPT: Convert a polygon to one SVG <polygon> line.
-// CHATGPT: Used only for SVG export, not normal canvas drawing.
+// Convert a polygon to one SVG <polygon> line.
+// Used only for SVG export, not normal canvas drawing.
 function polygonToSVG( shape, id, f, s, w )
 {
 	let verts = '';
@@ -120,7 +125,7 @@ function polygonToSVG( shape, id, f, s, w )
 
 	let str = ' stroke="none"';
 	if( s != null ) {
-		// CHATGPT: red(s), green(s), blue(s) are p5.js color-component functions.
+		// red(s), green(s), blue(s) are p5.js color-component functions.
 		str = ` stroke="rgb(${red(s)},${green(s)},${blue(s)})" stroke-width="${w}"`;
 	}
 
@@ -132,8 +137,8 @@ function polygonToSVG( shape, id, f, s, w )
 	return `    <polygon${ids} points="${verts}"${str}${fil}/>`;
 }
 
-// CHATGPT: Return an SVG <use> element that reuses an existing SVG definition.
-// CHATGPT: SVG wants matrix(a d b e c f), while this code stores [a,b,c,d,e,f].
+// Return an SVG <use> element that reuses an existing SVG definition.
+// SVG wants matrix(a d b e c f), while this code stores [a,b,c,d,e,f].
 function getSVGInstance( id, T )
 {
 	return `    <use xlink:href="#${id}" transform="matrix(${T[0]} ${T[3]} ${T[1]} ${T[4]} ${T[2]} ${T[5]})"/>`;
@@ -141,34 +146,31 @@ function getSVGInstance( id, T )
 
 // The base level of the scene, a single hat tile, including a label
 // for colouring
-// CHATGPT: A HatTile is one actual bottom-level hat tile.
-// CHATGPT: It has no children; it only knows how to draw/export itself.
+// A HatTile is one actual bottom-level hat tile.
+// It has no children; it only knows how to draw/export itself.
 class HatTile
 {
 	constructor( label )
 	{
-		// CHATGPT: Inside a class method, `this` means the particular object
-		// CHATGPT: being constructed or used. Here, `this.label` is the label
-		// CHATGPT: stored on this specific HatTile object.
 		this.label = label;
 		this.svg_id = null;
 	}
 
-	// CHATGPT: Draw this individual hat tile.
-	// CHATGPT: S is the accumulated transform placing the hat in the scene.
+	// Draw this individual hat tile.
+	// S is the accumulated transform placing the hat in the scene.
 	draw( S, level )
 	{
 		drawPolygon( 
 			hat_outline, S, null, black, 1 );
 	}
 
-	// CHATGPT: Clear cached SVG id so a future SVG export can assign a fresh one.
+	// Clear cached SVG id so a future SVG export can assign a fresh one.
 	resetSVG()
 	{
 		this.svg_id = null;
 	}
 
-	// CHATGPT: Add this hat's SVG polygon definition to `stream`, unless already added.
+	// Add this hat's SVG polygon definition to `stream`, unless already added.
 	buildSVGDefs( stream, sc )
 	{
 		if( this.svg_id != null ) {
@@ -180,20 +182,20 @@ class HatTile
 			null, black, lw_scale/sc ) );
 	}
 
-	// CHATGPT: A HatTile has no separate stroke group in SVG export.
+	// A HatTile has no separate stroke group in SVG export.
 	getSVGStrokeID()
 	{
 		return null;
 	}
 
-	// CHATGPT: The fill id is the SVG polygon id created in buildSVGDefs().
+	// The fill id is the SVG polygon id created in buildSVGDefs().
 	getSVGFillID()
 	{
 		return this.svg_id;
 	}
 
-	// CHATGPT: Export this hat as a text line containing its label and transform.
-	// CHATGPT: This is the important path for Save Matrices.
+	// Export this hat as a text line containing its label and transform.
+	// This is the important path for Save Matrices.
 	getText( stream, T )
 	{
 		// Write out the top two rows of an affine transformation matrix
@@ -204,45 +206,45 @@ class HatTile
 }
 
 // A group that collects a list of transformed children and an outline
-// CHATGPT: A MetaTile is a recursive container.
-// CHATGPT: It can contain HatTiles or other MetaTiles, each with a transform.
+// A MetaTile is a recursive container.
+// It can contain HatTiles or other MetaTiles, each with a transform.
 class MetaTile
 {
 	constructor( shape, width )
 	{
-		// CHATGPT: `shape` is this metatile's outline polygon in local coordinates.
+		// `shape` is this metatile's outline polygon in local coordinates.
 		this.shape = shape;
 
-		// CHATGPT: Width used when drawing this metatile's outline.
+		// Width used when drawing this metatile's outline.
 		this.width = width;
 
-		// CHATGPT: Each child is stored as { T : transform, geom : geometryObject }.
+		// Each child is stored as { T : transform, geom : geometryObject }.
 		this.children = [];
 
-		// CHATGPT: Cached SVG id for export.
+		// Cached SVG id for export.
 		this.svg_id = null;
 	}
 
-	// CHATGPT: Add one transformed child to this metatile.
+	// Add one transformed child to this metatile.
 	addChild( T, geom )
 	{
 		this.children.push( { T : T, geom : geom } );
 	}
 
-	// CHATGPT: Return vertex i of child n after applying that child's transform.
+	// Return vertex i of child n after applying that child's transform.
 	evalChild( n, i )
 	{
 		return transPt( this.children[n].T, this.children[n].geom.shape[i] );
 	}
 
-	// CHATGPT: Draw this metatile recursively.
-	// CHATGPT: If level > 0, draw children. If level == 0, draw only this outline.
+	// Draw this metatile recursively.
+	// If level > 0, draw children. If level == 0, draw only this outline.
 	draw( S, level )
 	{
 		if( level > 0 ) {
 			for( let g of this.children ) {
-				// CHATGPT: mul(S, g.T) composes transforms.
-				// CHATGPT: Child-local coordinates -> this metatile -> screen/world.
+				// mul(S, g.T) composes transforms.
+				// Child-local coordinates -> this metatile -> screen/world.
 				g.geom.draw( mul( S, g.T ), level - 1 );
 			}
 		} else {
@@ -250,9 +252,9 @@ class MetaTile
 		}
 	}
 
-	// CHATGPT: Move the metatile so the average of its outline vertices is at the origin.
-	// CHATGPT: Child transforms are adjusted so the same geometry stays in place
-	// CHATGPT: relative to the new local origin.
+	// Move the metatile so the average of its outline vertices is at the origin.
+	// Child transforms are adjusted so the same geometry stays in place
+	// relative to the new local origin.
 	/*recentre()
 	{
 		let cx = 0;
@@ -275,7 +277,7 @@ class MetaTile
 		}
 	}*/
 
-	// CHATGPT: Recursively clear SVG ids for this metatile and its descendants.
+	// Recursively clear SVG ids for this metatile and its descendants.
 	resetSVG()
 	{
 		for( let ch of this.children ) {
@@ -284,8 +286,8 @@ class MetaTile
 		this.svg_id = null;
 	}
 
-	// CHATGPT: Recursively build SVG definitions.
-	// CHATGPT: Fill groups and stroke groups are separated so fills appear under outlines.
+	// Recursively build SVG definitions.
+	// Fill groups and stroke groups are separated so fills appear under outlines.
 	buildSVGDefs( stream, sc )
 	{
 		if( this.svg_id != null ) {
@@ -325,20 +327,20 @@ class MetaTile
 		stream.push( '  </g>' );
 	}
 
-	// CHATGPT: SVG id for this metatile's stroke group.
+	// SVG id for this metatile's stroke group.
 	getSVGStrokeID()
 	{
 		return `${this.svg_id}s`;
 	}
 
-	// CHATGPT: SVG id for this metatile's fill group.
+	// SVG id for this metatile's fill group.
 	getSVGFillID()
 	{
 		return `${this.svg_id}f`;
 	}
 
-	// CHATGPT: Recursively export all bottom-level hats.
-	// CHATGPT: T is the accumulated transform from the root down to this metatile.
+	// Recursively export all bottom-level hats.
+	// T is the accumulated transform from the root down to this metatile.
 	getText( stream, T )
 	{
 		for( let g of this.children ) {
@@ -346,47 +348,47 @@ class MetaTile
 		}
 	}
 }
-// CHATGPT: These are five HatTile objects with different labels.
-// CHATGPT: They all use the same geometric hat outline, but the label controls color/export type.
+// These are five HatTile objects with different labels.
+// They all use the same geometric hat outline, but the label controls color/export type.
 const H1_hat = new HatTile( 'H1' );
 const H_hat = new HatTile( 'H' );
 const T_hat = new HatTile( 'T' );
 const P_hat = new HatTile( 'P' );
 const F_hat = new HatTile( 'F' );
 
-// CHATGPT: H_init is the initial/base H metatile.
-// CHATGPT: The pattern `(function () { ... }())` defines a function and immediately runs it.
-// CHATGPT: This creates local variables like H_outline and meta without leaving them global.
+// H_init is the initial/base H metatile.
+// The pattern `(function () { ... }())` defines a function and immediately runs it.
+// This creates local variables like H_outline and meta without leaving them global.
 const H_init = (function () {
-	// CHATGPT: Outline polygon of the initial H metatile.
+	// Outline polygon of the initial H metatile.
 	const H_outline = [
 		pt( 0, 0 ), pt( 4, 0 ), pt( 4.5, hr3 ),
 		pt( 2.5, 5 * hr3 ), pt( 1.5, 5 * hr3 ), pt( -0.5, hr3 ) ];
 
-	// CHATGPT: Make a MetaTile with this outline and outline stroke width 2.
+	// Make a MetaTile with this outline and outline stroke width 2.
 	const meta = new MetaTile( H_outline, 2 );
 
-	// CHATGPT: Add an ordinary H hat into the H metatile.
-	// CHATGPT: matchTwo(a,b,c,d) computes an affine transform placing edge a-b onto edge c-d.
+	// Add an ordinary H hat into the H metatile.
+	// matchTwo(a,b,c,d) computes an affine transform placing edge a-b onto edge c-d.
 	meta.addChild( 
 		matchTwo( 
 			hat_outline[5], hat_outline[7], H_outline[5], H_outline[0] ),
 		H_hat );
 
-	// CHATGPT: Add another H hat, fitted to a different edge of the H metatile outline.
+	// Add another H hat, fitted to a different edge of the H metatile outline.
 	meta.addChild( 
 		matchTwo( 
 			hat_outline[9], hat_outline[11], H_outline[1], H_outline[2] ),
 		H_hat );
 
-	// CHATGPT: Add a third H hat.
+	// Add a third H hat.
 	meta.addChild( 
 		matchTwo( 
 			hat_outline[5], hat_outline[7], H_outline[3], H_outline[4] ),
 		H_hat );
 
-	// CHATGPT: Add the special H1 hat using an explicit affine transform.
-	// CHATGPT: mul(A,B) composes transforms. ttrans(x,y) is translation.
+	// Add the special H1 hat using an explicit affine transform.
+	// mul(A,B) composes transforms. ttrans(x,y) is translation.
 	meta.addChild( 
 		mul( ttrans( 2.5, hr3 ), 
 			mul( 
@@ -396,34 +398,34 @@ const H_init = (function () {
 
 	return meta; }());
 
-// CHATGPT: Initial/base T metatile.
+// Initial/base T metatile.
 const T_init = (function () {
-	// CHATGPT: Equilateral-triangle-like outline for T.
+	// Equilateral-triangle-like outline for T.
 	const T_outline = [
 		pt( 0, 0 ), pt( 3, 0 ), pt( 1.5, 3 * hr3 ) ];
 	const meta = new MetaTile( T_outline, 2 );
 
-	// CHATGPT: Add one ordinary T-labeled hat inside the T metatile.
+	// Add one ordinary T-labeled hat inside the T metatile.
 	meta.addChild( 
 		[0.5, 0, 0.5, 0, 0.5, hr3],
 		T_hat );
 
 	return meta; }());
 
-// CHATGPT: Initial/base P metatile.
+// Initial/base P metatile.
 const P_init = (function () {
-	// CHATGPT: Parallelogram-like outline for P.
+	// Parallelogram-like outline for P.
 	const P_outline = [
 		pt( 0, 0 ), pt( 4, 0 ), 
 		pt( 3, 2 * hr3 ), pt( -1, 2 * hr3 ) ];
 	const meta = new MetaTile( P_outline, 2 );
 
-	// CHATGPT: Add first P-labeled hat.
+	// Add first P-labeled hat.
 	meta.addChild( 
 		[0.5, 0, 1.5, 0, 0.5, hr3],
 		P_hat );
 
-	// CHATGPT: Add second P-labeled hat with a composed affine transform.
+	// Add second P-labeled hat with a composed affine transform.
 	meta.addChild( 
 		mul( ttrans( 0, 2 * hr3 ), 
 			mul( [0.5, hr3, 0, -hr3, 0.5, 0],
@@ -432,20 +434,20 @@ const P_init = (function () {
 
 	return meta; }());
 
-// CHATGPT: Initial/base F metatile.
+// Initial/base F metatile.
 const F_init = (function () {
-	// CHATGPT: Pentagonal/triskelion-related outline for F.
+	// Pentagonal/triskelion-related outline for F.
 	const F_outline = [
 		pt( 0, 0 ), pt( 3, 0 ), 
 		pt( 3.5, hr3 ), pt( 3, 2 * hr3 ), pt( -1, 2 * hr3 ) ];
 	const meta = new MetaTile( F_outline, 2 );
 
-	// CHATGPT: Add first F-labeled hat.
+	// Add first F-labeled hat.
 	meta.addChild( 
 		[0.5, 0, 1.5, 0, 0.5, hr3],
 		F_hat );
 
-	// CHATGPT: Add second F-labeled hat.
+	// Add second F-labeled hat.
 	meta.addChild( 
 		mul( ttrans( 0, 2 * hr3 ), 
 			mul( [0.5, hr3, 0, -hr3, 0.5, 0],
@@ -454,24 +456,24 @@ const F_init = (function () {
 
 	return meta; }());
 
-// CHATGPT: Build the large intermediate substitution patch from the current H/T/P/F metatiles.
-// CHATGPT: This does not directly return the next four metatiles. Instead, it creates
-// CHATGPT: a larger patch that constructMetatiles(...) later regroups.
+// Build the large intermediate substitution patch from the current H/T/P/F metatiles.
+// This does not directly return the next four metatiles. Instead, it creates
+// a larger patch that constructMetatiles(...) later regroups.
 function constructPatch( H, T, P, F )
 {
-	// CHATGPT: These hard-coded rules describe how to place H/T/P/F metatiles.
-	// CHATGPT:
-	// CHATGPT: Rule format 1:
-	// CHATGPT:   ['H']
-	// CHATGPT: means place an H at the identity transform.
-	// CHATGPT:
-	// CHATGPT: Rule format 2:
-	// CHATGPT:   [existingChildIndex, existingEdgeIndex, newShapeLabel, newShapeEdgeIndex]
-	// CHATGPT: means attach a new shape to a specific edge of an existing child.
-	// CHATGPT:
-	// CHATGPT: Rule format 3:
-	// CHATGPT:   [childPIndex, vertexPIndex, childQIndex, vertexQIndex, newShapeLabel, newShapeEdgeIndex]
-	// CHATGPT: means place a new shape using two already-existing patch vertices.
+	// These hard-coded rules describe how to place H/T/P/F metatiles.
+	//
+	// Rule format 1:
+	//   ['H']
+	// means place an H at the identity transform.
+	//
+	// Rule format 2:
+	//   [existingChildIndex, existingEdgeIndex, newShapeLabel, newShapeEdgeIndex]
+	// means attach a new shape to a specific edge of an existing child.
+	//
+	// Rule format 3:
+	//   [childPIndex, vertexPIndex, childQIndex, vertexQIndex, newShapeLabel, newShapeEdgeIndex]
+	// means place a new shape using two already-existing patch vertices.
 	const rules = [
 		['H'],
 		[0, 0, 'P', 2],
@@ -504,53 +506,47 @@ function constructPatch( H, T, P, F )
 		[4, 0, 'F', 3] 
 		];
 
-	// CHATGPT: This creates the patch object that will receive all placed children.
-	// CHATGPT: Notice that the original code does not write `let ret`.
-	// CHATGPT: I am not changing that here, but in JavaScript it means `ret`
-	// CHATGPT: becomes a global variable in non-strict mode.
-	ret = new MetaTile( [], H.width );
+	const ret = new MetaTile( [], H.width );
 
-	// CHATGPT: Dictionary from labels in the rules to actual metatile objects.
-	// CHATGPT: Like `ret`, this is also undeclared in the original code.
-	shapes = { 'H' : H, 'T' : T, 'P' : P, 'F' : F };
+	const shapes = { 'H' : H, 'T' : T, 'P' : P, 'F' : F };
 
-	// CHATGPT: Apply each placement rule in order.
+	// Apply each placement rule in order.
 	for( let r of rules ) {
 		if( r.length == 1 ) {
-			// CHATGPT: Place the first shape at the identity transform.
+			// Place the first shape at the identity transform.
 			ret.addChild( ident, shapes[r[0]] );
 		} else if( r.length == 4 ) {
-			// CHATGPT: Attach a new shape to an edge of an already-placed child.
+			// Attach a new shape to an edge of an already-placed child.
 			const poly = ret.children[r[0]].geom.shape;
 			const T = ret.children[r[0]].T;
 
-			// CHATGPT: Compute the two world/patch-space endpoints of the target edge.
-			// CHATGPT: The order P,Q is intentionally reversed relative to the existing edge.
+			// Compute the two world/patch-space endpoints of the target edge.
+			// The order P,Q is intentionally reversed relative to the existing edge.
 			const P = transPt( T, poly[(r[1]+1)%poly.length] );
 			const Q = transPt( T, poly[r[1]] );
 
-			// CHATGPT: Get the new shape and its outline.
+			// Get the new shape and its outline.
 			const nshp = shapes[r[2]];
 			const npoly = nshp.shape;
 
-			// CHATGPT: Place the new shape so its chosen edge matches target edge P-Q.
+			// Place the new shape so its chosen edge matches target edge P-Q.
 			ret.addChild(
 				matchTwo( npoly[r[3]], npoly[(r[3]+1)%npoly.length], P, Q ),
 				nshp );
 		} else {
-			// CHATGPT: More constrained placement: use vertices from two existing children.
+			// More constrained placement: use vertices from two existing children.
 			const chP = ret.children[r[0]];
 			const chQ = ret.children[r[2]];
 
-			// CHATGPT: Compute the two target points in patch coordinates.
+			// Compute the two target points in patch coordinates.
 			const P = transPt( chQ.T, chQ.geom.shape[r[3]] );
 			const Q = transPt( chP.T, chP.geom.shape[r[1]] );
 
-			// CHATGPT: Get the new shape and its outline.
+			// Get the new shape and its outline.
 			const nshp = shapes[r[4]];
 			const npoly = nshp.shape;
 
-			// CHATGPT: Place the new shape so one of its edges lands on P-Q.
+			// Place the new shape so one of its edges lands on P-Q.
 			ret.addChild(
 				matchTwo( npoly[r[5]], npoly[(r[5]+1)%npoly.length], P, Q ),
 				nshp );
@@ -559,31 +555,31 @@ function constructPatch( H, T, P, F )
 
 	return ret;
 }
-// CHATGPT: Given the intermediate patch from constructPatch(...), extract/regroup
-// CHATGPT: selected children into the next generation of H/T/P/F metatiles.
-// CHATGPT: This is the substitution step that makes the tiling grow hierarchically.
+// Given the intermediate patch from constructPatch(...), extract/regroup
+// selected children into the next generation of H/T/P/F metatiles.
+// This is the substitution step that makes the tiling grow hierarchically.
 function constructMetatiles( patch )
 {
-	// CHATGPT: Pick specific vertices from the patch. These points are used as
-	// CHATGPT: geometric anchors for the outlines of the next-level metatiles.
+	// Pick specific vertices from the patch. These points are used as
+	// geometric anchors for the outlines of the next-level metatiles.
 	const bps1 = patch.evalChild( 8, 2 );
 	const bps2 = patch.evalChild( 21, 2 );
 
-	// CHATGPT: Rotate bps2 around bps1 by -120 degrees, then use the result
-	// CHATGPT: as part of a line-intersection construction below.
+	// Rotate bps2 around bps1 by -120 degrees, then use the result
+	// as part of a line-intersection construction below.
 	const rbps = transPt( rotAbout( bps1, -2.0*PI/3.0 ), bps2 );
 
 	const p72 = patch.evalChild( 7, 2 );
 	const p252 = patch.evalChild( 25, 2 );
 
-	// CHATGPT: Compute an intersection point used as a corner of the new H/P outlines.
+	// Compute an intersection point used as a corner of the new H/P outlines.
 	const llc = intersect( bps1, rbps,
 		patch.evalChild( 6, 2 ), p72 );
 
-	// CHATGPT: Start with a vector from llc to another patch vertex.
+	// Start with a vector from llc to another patch vertex.
 	let w = psub( patch.evalChild( 6, 2 ), llc );
 
-	// CHATGPT: Build the polygon outline of the next-level H metatile.
+	// Build the polygon outline of the next-level H metatile.
 	const new_H_outline = [llc, bps1];
 	w = transPt( trot( -PI/3 ), w );
 	new_H_outline.push( padd( new_H_outline[1], w ) );
@@ -592,23 +588,23 @@ function constructMetatiles( patch )
 	new_H_outline.push( psub( new_H_outline[3], w ) );
 	new_H_outline.push( patch.evalChild( 6, 2 ) );
 
-	// CHATGPT: Create the next-level H metatile.
-	// CHATGPT: Its outline stroke width doubles each substitution level.
+	// Create the next-level H metatile.
+	// Its outline stroke width doubles each substitution level.
 	const new_H = new MetaTile( new_H_outline, patch.width * 2 );
 
-	// CHATGPT: These selected patch children become the contents of the new H.
+	// These selected patch children become the contents of the new H.
 	for( let ch of [0, 9, 16, 27, 26, 6, 1, 8, 10, 15] ) {
 		new_H.addChild( patch.children[ch].T, patch.children[ch].geom );
 	}
 
-	// CHATGPT: Build the next-level P metatile outline and contents.
+	// Build the next-level P metatile outline and contents.
 	const new_P_outline = [ p72, padd( p72, psub( bps1, llc ) ), bps1, llc ];
 	const new_P = new MetaTile( new_P_outline, patch.width * 2 );
 	for( let ch of [7,2,3,4,28] ) {
 		new_P.addChild( patch.children[ch].T, patch.children[ch].geom );
 	}
 
-	// CHATGPT: Build the next-level F metatile outline and contents.
+	// Build the next-level F metatile outline and contents.
 	const new_F_outline = [ 
 		bps2, patch.evalChild( 24, 2 ), patch.evalChild( 25, 0 ),
 		p252, padd( p252, psub( llc, bps1 ) ) ];
@@ -617,7 +613,7 @@ function constructMetatiles( patch )
 		new_F.addChild( patch.children[ch].T, patch.children[ch].geom );
 	}
 	
-	// CHATGPT: Build the next-level T metatile.
+	// Build the next-level T metatile.
 	const AAA = new_H_outline[2];
 	const BBB = padd( new_H_outline[1], 
 		psub( new_H_outline[4], new_H_outline[5] ) );
@@ -625,35 +621,35 @@ function constructMetatiles( patch )
 	const new_T_outline = [BBB,CCC,AAA];
 	const new_T = new MetaTile( new_T_outline, patch.width * 2 );
 
-	// CHATGPT: The next-level T contains one selected child from the patch.
+	// The next-level T contains one selected child from the patch.
 	new_T.addChild( patch.children[11].T, patch.children[11].geom );
 
-	// CHATGPT: Recenter each new metatile so its local coordinate origin is near
-	// CHATGPT: the center of its outline. This also updates child transforms.
+	// Recenter each new metatile so its local coordinate origin is near
+	// the center of its outline. This also updates child transforms.
 	/*new_H.recentre();
 	new_P.recentre();
 	new_F.recentre();
 	new_T.recentre();*/
 
-	// CHATGPT: Return the new current set of four metatiles.
+	// Return the new current set of four metatiles.
 	return [new_H, new_T, new_P, new_F]
 }
 
-// CHATGPT: A button is considered active if its CSS border string is nonempty.
-// CHATGPT: This code uses the presence of a border as a simple on/off state.
+// A button is considered active if its CSS border string is nonempty.
+// This code uses the presence of a border as a simple on/off state.
 function isButtonActive( but )
 {
 	return but.elt.style.border.length > 0;
 }
 
-// CHATGPT: Set a button's active state by changing its border style.
+// Set a button's active state by changing its border style.
 function setButtonActive( but, b )
 {
 	but.elt.style.border = (b ? "3px solid black" : "");
 }
 
-// CHATGPT: Convenience helper for creating a UI button in the left panel.
-// CHATGPT: `name` is the button text; `f` is the function called when clicked.
+// Convenience helper for creating a UI button in the left panel.
+// `name` is the button text; `f` is the function called when clicked.
 function addButton( name, f )
 {
 	const ret = createButton( name );
@@ -1277,7 +1273,7 @@ function buildTrajectoryJSONPayload()
 		maxExpansionLevel: result.level
 	} ) );
 	return {
-		format: 'hatviz-billiards-trajectory',
+		format: 'hat-billiards-trajectory',
 		version: 1,
 		tilingConfig: {
 			rootType: simulator_result.rootType,
@@ -1338,7 +1334,7 @@ function saveTrajectoryJSON()
 	const stamp = new Date().toISOString().replace( /[:.]/g, '-' );
 	saveStrings(
 		[JSON.stringify( payload, null, 2 )],
-		`hatviz-trajectory-${stamp}`,
+		`hat-billiards-trajectory-${stamp}`,
 		'json' );
 }
 
@@ -1505,9 +1501,18 @@ async function refreshServerDisplayPatch()
 	}
 }
 
+function isSupportedTrajectoryPayload( payload )
+{
+	return payload && (
+		payload.format === 'hat-billiards-trajectory' ||
+		payload.format === 'hatviz-billiards-trajectory'
+	);
+}
+
 function applyTrajectoryJSONPayload( payload, options )
 {
-	if( !payload || payload.format !== 'hatviz-billiards-trajectory' ) {
+	if( !isSupportedTrajectoryPayload( payload ) ) {
+		console.warn( 'Unsupported trajectory JSON format.', payload && payload.format );
 		return;
 	}
 	options = options || {};
@@ -2051,35 +2056,35 @@ function buildExportTiles()
 
 function saveCurrentSVG()
 {
-	// CHATGPT: Reset SVG id counter and cached SVG ids.
+	// Reset SVG id counter and cached SVG ids.
 	svg_serial = 0;
 	for( let t of tiles ) {
 		t.resetSVG();
 	}
 
-	// CHATGPT: SVG is built as an array of strings, then saved.
+	// SVG is built as an array of strings, then saved.
 	const stream = [];
 	stream.push( `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">` );
 	stream.push( '<defs>' );
 
-	// CHATGPT: Build reusable SVG definitions for all current metatiles.
+	// Build reusable SVG definitions for all current metatiles.
 	for( let t of tiles ) {
 		t.buildSVGDefs( stream, mag( to_screen[0], to_screen[1] ) );
 	}
 	stream.push( '</defs>' );
 
-	// CHATGPT: Choose H/T/P/F based on the radio button.
+	// Choose H/T/P/F based on the radio button.
 	const idx = {'H':0, 'T':1, 'P':2, 'F':3}[radio.value()];
 
-	// CHATGPT: Compose a screen-centering translation with the current transform.
+	// Compose a screen-centering translation with the current transform.
 	const S = mul( ttrans( width/2, height/2 ), to_screen );
 
-	// CHATGPT: Add filled hats if visible.
+	// Add filled hats if visible.
 	if( isButtonActive( draw_hats ) ) {
 		stream.push( getSVGInstance( tiles[idx].getSVGFillID(), S ) );
 	}
 
-	// CHATGPT: Add the current metatile outline layer if visible.
+	// Add the current metatile outline layer if visible.
 	if( anyMetatileLevelActive() ) {
 		const generatedLevel = currentGeneratedLevel();
 		const outlineRoot = getOutlineRootGeometry( radio.value(), generatedLevel );
@@ -2099,28 +2104,28 @@ function saveCurrentMatrices()
 {
 	const stream = [];
 
-	// CHATGPT: Pick current root metatile H/T/P/F.
+	// Pick current root metatile H/T/P/F.
 	const idx = {'H':0, 'T':1, 'P':2, 'F':3}[radio.value()];
 
-	// CHATGPT: Recursively descend to bottom-level HatTiles and export transforms.
+	// Recursively descend to bottom-level HatTiles and export transforms.
 	tiles[idx].getText( stream, ident );
 
 	saveStrings( stream, 'output', 'txt' );
 }
 
-// CHATGPT: p5.js calls setup() once when the sketch starts.
-// CHATGPT: This creates the canvas, initializes tiles, and builds the UI.
+// p5.js calls setup() once when the sketch starts.
+// This creates the canvas, initializes tiles, and builds the UI.
 function setup() {
 	createCanvas( windowWidth, windowHeight );
 
-	// CHATGPT: Start with the four initial metatiles.
+	// Start with the four initial metatiles.
 	tiles = [H_init, T_init, P_init, F_init];
 	level = 1;
 
-	// CHATGPT: Make a p5 color object for black.
+	// Make a p5 color object for black.
 	black = color( 'black' );
 
-	// CHATGPT: Reset the whole scene to the starting substitution level and viewport.
+	// Reset the whole scene to the starting substitution level and viewport.
 	reset_button = addButton( "Reset", function() {
 		tiles = [H_init, T_init, P_init, F_init];
 		level = 1;
@@ -2134,12 +2139,9 @@ function setup() {
 		loop();
 	} );
 
-	// CHATGPT: Advance one substitution level.
-	// CHATGPT: `...tiles` spreads [H,T,P,F] into four separate arguments.
-	// subst_button = addButton( "Build Export Tiles", buildExportTiles );
 	box_height += 10;
 
-	// CHATGPT: Radio buttons let the user choose which root metatile to display.
+	// Radio buttons let the user choose which root metatile to display.
 	radio = createRadio();
 	radio.mousePressed( function() {
 		setTimeout( function() {
@@ -2164,8 +2166,8 @@ function setup() {
 		radio.hide();
 	}
 
-    	// CHATGPT: Create Translate and Scale mode buttons.
-	// CHATGPT: These modes determine how mouse dragging affects the view.
+    	// Create Translate and Scale mode buttons.
+	// These modes determine how mouse dragging affects the view.
 	translate_button = addButton( "Translate", function() {
 		setButtonActive( translate_button, true );
 		setButtonActive( scale_button, false );
@@ -2177,11 +2179,11 @@ function setup() {
 		loop();
 	} );
 
-	// CHATGPT: Start in Translate mode.
+	// Start in Translate mode.
 	setButtonActive( translate_button, true );
 	box_height += 10;
 	
-	// CHATGPT: Toggle whether individual bottom-level hats are drawn.
+	// Toggle whether individual bottom-level hats are drawn.
 	draw_hats = addButton( "Draw Hats", function() {
 		setButtonActive( draw_hats, !isButtonActive( draw_hats ) );
 		loop();
@@ -2196,7 +2198,7 @@ function setup() {
 		setButtonActive( levelButton, false );
 	}
 
-	// CHATGPT: Start with hats visible and metatile outlines off.
+	// Start with hats visible and metatile outlines off.
 	setButtonActive( draw_hats, true );
 	box_height += 10;
 
@@ -2256,8 +2258,8 @@ function setup() {
 	} );
 	box_height += 10;
 
-	// CHATGPT: Save the current canvas as a PNG image.
-	// CHATGPT: The UI box is temporarily hidden so it is not included.
+	// Save the current canvas as a PNG image.
+	// The UI box is temporarily hidden so it is not included.
 	addButton( "Save PNG", function () {
 		uibox = false;
 		draw();
@@ -2266,29 +2268,28 @@ function setup() {
 		draw();
 	} );
 
-	// CHATGPT: Save the current view as an SVG vector file.
+	// Save the current view as an SVG vector file.
 	// addButton( "Save SVG", saveCurrentSVG );
 
-	// CHATGPT: Save one text line per bottom-level hat tile.
-	// CHATGPT: This is probably the most useful export for your billiards simulator.
+	// Save one text line per bottom-level hat tile.
 	// addButton( "Save Matrices", saveCurrentMatrices );
 
 	box_height -= 5; // remove half the padding
 	rebuildSimulatorTiling();
 }
 
-// CHATGPT: p5.js calls draw() whenever the sketch redraws.
-// CHATGPT: This program calls noLoop() at the end, so drawing pauses until loop()
-// CHATGPT: is called by UI/mouse events.
+// p5.js calls draw() whenever the sketch redraws.
+// This program calls noLoop() at the end, so drawing pauses until loop()
+// is called by UI/mouse events.
 function draw()
 {
 	background( 255 );
 
-	// CHATGPT: Save p5 drawing state, then translate origin to canvas center.
+	// Save p5 drawing state, then translate origin to canvas center.
 	push();
 	translate( width/2, height/2 );
 
-	// CHATGPT: Draw the engine-owned local patch around the current trajectory tile.
+	// Draw the engine-owned local patch around the current trajectory tile.
 	drawSimulatorPatch();
 	drawSimulatorMetatiles();
 
@@ -2297,7 +2298,7 @@ function draw()
 	drawTrajectoryEndpointEdges();
 	pop();
 
-	// CHATGPT: Draw translucent UI panel over the canvas.
+	// Draw translucent UI panel over the canvas.
 		if( uibox ) {
 			stroke( 0 );
 			strokeWeight( 0.5 );
@@ -2316,73 +2317,73 @@ function draw()
 			}
 		}
 
-	// CHATGPT: Pause continuous drawing until something calls loop().
+	// Pause continuous drawing until something calls loop().
 	noLoop();
 }
 
-// CHATGPT: p5.js calls this when the browser window changes size.
+// p5.js calls this when the browser window changes size.
 function windowResized() 
 {
 	resizeCanvas( windowWidth, windowHeight );
 }
-// CHATGPT: p5.js calls this when the mouse is pressed.
-// CHATGPT: It starts a drag operation. If Scale mode is active, it records
-// CHATGPT: enough information to compute zoom during mouseDragged().
+// p5.js calls this when the mouse is pressed.
+// It starts a drag operation. If Scale mode is active, it records
+// enough information to compute zoom during mouseDragged().
 function mousePressed()
 {
 	dragging = true;
 	if( isButtonActive( scale_button ) ) {
-		// CHATGPT: Convert the screen center back into model coordinates.
-		// CHATGPT: This point acts as the center of scaling.
+		// Convert the screen center back into model coordinates.
+		// This point acts as the center of scaling.
 		scale_centre = transPt( inv( to_screen ), pt( width/2, height/2 ) );
 
-		// CHATGPT: Store the initial mouse point.
+		// Store the initial mouse point.
 		scale_start = pt( mouseX, mouseY );
 
-		// CHATGPT: Copy current transform. The spread syntax makes a shallow copy
-		// CHATGPT: of the six-number array so later changes do not mutate scale_ts.
+		// Copy current transform. The spread syntax makes a shallow copy
+		// of the six-number array so later changes do not mutate scale_ts.
 		scale_ts = [...to_screen];
 	}
 	loop();
 }
 
-// CHATGPT: p5.js calls this repeatedly while the mouse is dragged.
-// CHATGPT: Depending on active mode, dragging either translates or scales the view.
+// p5.js calls this repeatedly while the mouse is dragged.
+// Depending on active mode, dragging either translates or scales the view.
 function mouseDragged()
 {
 	if( dragging ) {
 		if( isButtonActive( translate_button ) ) {
-			// CHATGPT: Translate/pan by the mouse movement since the previous frame.
-			// CHATGPT: pmouseX and pmouseY are p5.js variables for previous mouse position.
+			// Translate/pan by the mouse movement since the previous frame.
+			// pmouseX and pmouseY are p5.js variables for previous mouse position.
 			to_screen = mul( ttrans( mouseX - pmouseX, mouseY - pmouseY ), 
 				to_screen );
 		} else if( isButtonActive( scale_button ) ) {
-			// CHATGPT: Scaling factor is based on how far the mouse is from canvas center
-			// CHATGPT: compared with the distance at the start of the drag.
+			// Scaling factor is based on how far the mouse is from canvas center
+			// compared with the distance at the start of the drag.
 			let sc = dist( mouseX, mouseY, width/2, height/2 ) / 
 				dist( scale_start.x, scale_start.y, width/2, height/2 );
 
-			// CHATGPT: Build a transform that scales about scale_centre:
-			// CHATGPT: translate to center, scale, translate back, then apply original transform.
+			// Build a transform that scales about scale_centre:
+			// translate to center, scale, translate back, then apply original transform.
 			to_screen = mul( 
 				mul( ttrans( scale_centre.x, scale_centre.y ),
 					mul( [sc, 0, 0, 0, sc, 0],
 						ttrans( -scale_centre.x, -scale_centre.y ) ) ),
 				scale_ts );
 
-			// CHATGPT: Update line-width scaling so strokes change sensibly with zoom.
+			// Update line-width scaling so strokes change sensibly with zoom.
 			lw_scale = mag( to_screen[0], to_screen[1] ) / 20.0;
 		}
 		loop();
 
-		// CHATGPT: Returning false tells p5/the browser not to perform default
-		// CHATGPT: drag behavior, such as selecting text or dragging the page.
+		// Returning false tells p5/the browser not to perform default
+		// drag behavior, such as selecting text or dragging the page.
 		return false;
 	} 
 }
 
-// CHATGPT: p5.js calls this when the mouse button is released.
-// CHATGPT: It ends the drag operation.
+// p5.js calls this when the mouse button is released.
+// It ends the drag operation.
 function mouseReleased()
 {
 	dragging = false;

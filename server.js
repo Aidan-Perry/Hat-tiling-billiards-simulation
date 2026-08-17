@@ -4,8 +4,11 @@ const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
 
-const HOST = process.env.HATVIZ_HOST || '127.0.0.1';
-const PORT = Number(process.env.HATVIZ_PORT || 8765);
+// Local compute server for the browser app. The browser can run small
+// trajectories directly, but level-6 patches and diagnostics are handled here.
+
+const HOST = process.env.HAT_BILLIARDS_HOST || '127.0.0.1';
+const PORT = Number(process.env.HAT_BILLIARDS_PORT || 8765);
 const ROOT = __dirname;
 const DIAGNOSTICS_DIR = path.join( ROOT, 'Diagnostics' );
 const tilingCache = new Map();
@@ -43,7 +46,7 @@ function loadEngineContext() {
 	};
 	context.globalThis = context;
 	vm.createContext( context );
-	for( const file of ['geometry.js', 'hat2.js', 'engine.js'] ) {
+	for( const file of ['geometry.js', 'tiling.js', 'engine.js'] ) {
 		const code = fs.readFileSync( path.join( ROOT, file ), 'utf8' );
 		vm.runInContext( code, context, { filename: file } );
 	}
@@ -1593,7 +1596,7 @@ function buildDiagnosticsPayload( req, specs, results ) {
 	const fileName = diagnosticsFileName( timestamp, runId );
 	const publicResults = results.map( publicResult );
 	return {
-		format: 'hatviz-diagnostics',
+		format: 'hat-billiards-diagnostics',
 		version: 1,
 		available: true,
 		runId,
@@ -1806,7 +1809,7 @@ function trajectoryPayload( tilingConfig, spec, result, patchRadius ) {
 	const publicResults = results.map( publicResult );
 	const startTileSelection = tilingConfig.startTileId == null ? 'centralTileId' : 'tileId';
 	return {
-		format: 'hatviz-billiards-trajectory',
+		format: 'hat-billiards-trajectory',
 		version: 1,
 		serverBacked: true,
 		tilingConfig: {
@@ -1935,7 +1938,7 @@ function handlePatch( body ) {
 			item.focusTileIds : focusTileIdsForResult( item )
 	} ) );
 	const patch = {
-		format: 'hatviz-billiards-trajectory-patch',
+		format: 'hat-billiards-trajectory-patch',
 		version: 1,
 		rootType,
 		level,
@@ -2105,5 +2108,5 @@ const server = http.createServer( async (req, res) => {
 } );
 
 server.listen( PORT, HOST, () => {
-	console.log( `Hatviz server listening at http://${HOST}:${PORT}/app.html` );
+	console.log( `Hat Tiling Billiards Simulation server listening at http://${HOST}:${PORT}/app.html` );
 } );

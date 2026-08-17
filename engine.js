@@ -1,6 +1,10 @@
 (function(global) {
 	'use strict';
 
+	// Core tiling-billiards engine used by both the browser and server.
+	// It builds finite hat tiling patches, computes edge adjacency, and traces
+	// billiard-like trajectories through adjacent hats.
+
 	const ROOT_INDEX = { H: 0, T: 1, P: 2, F: 3 };
 	const ROOT_TYPES = Object.keys( ROOT_INDEX );
 	const DEFAULT_MAX_EXPANSION_LEVEL = 6;
@@ -534,6 +538,27 @@
 		return bestIndex;
 	}
 
+	function edgeIndexContainingPoint( tile, point, eps ) {
+		let bestIndex = null;
+		let bestDistance = Infinity;
+		for( const edge of tile.edges ) {
+			const ab = sub( edge.b, edge.a );
+			const ap = sub( point, edge.a );
+			const denom = dot( ab, ab );
+			const u = denom === 0 ? 0 : dot( ap, ab ) / denom;
+			if( u < -eps || u > 1 + eps ) {
+				continue;
+			}
+			const q = add( edge.a, scale( ab, Math.max( 0, Math.min( 1, u ) ) ) );
+			const d = distance( point, q );
+			if( d < bestDistance ) {
+				bestDistance = d;
+				bestIndex = edge.index;
+			}
+		}
+		return bestDistance <= eps ? bestIndex : null;
+	}
+
 	function recoverNeighborAcrossHit( state, tile, hit ) {
 		const candidates = [
 			reflectAcrossEdge( state.direction, hit.edge ),
@@ -545,9 +570,16 @@
 			const probe = add( hit.point, scale( candidate, probeDistance ) );
 			const tileId = locateNeighborTileContaining( state.tiling, probe, tile.id );
 			if( tileId != null && tileId !== tile.id ) {
+				const edgeIndex = edgeIndexContainingPoint(
+					state.tiling.tiles[tileId],
+					hit.point,
+					state.tiling.tolerances.VERTEX_EPS );
+				if( edgeIndex == null ) {
+					continue;
+				}
 				return {
 					tileId,
-					edgeIndex: nearestEdgeIndexToPoint( state.tiling.tiles[tileId], hit.point )
+					edgeIndex
 				};
 			}
 		}

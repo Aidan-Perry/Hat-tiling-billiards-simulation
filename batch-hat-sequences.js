@@ -143,7 +143,7 @@ function loadEngineContext() {
 	};
 	context.globalThis = context;
 	vm.createContext( context );
-	for( const file of ['geometry.js', 'hat2.js', 'engine.js'] ) {
+	for( const file of ['geometry.js', 'tiling.js', 'engine.js'] ) {
 		const code = fs.readFileSync( path.join( ROOT, file ), 'utf8' );
 		vm.runInContext( code, context, { filename: file } );
 	}
@@ -317,7 +317,7 @@ function buildHeader(
 	const problemList = problemRuns.length === 0 ? 'none' :
 		problemRuns.map( run => `${run.angle}:${run.length}:${run.status}` ).join( ', ' );
 	return [
-		'# format: hatviz-hat-sequences-tsv',
+		'# format: hat-billiards-hat-sequences-tsv',
 		'# version: 1',
 		`# root_type: ${config.rootType}`,
 		`# level: ${config.level}`,

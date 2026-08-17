@@ -17,12 +17,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Hatviz generated exports
+# Hat Tiling Billiards Simulation generated exports
 output.png
 output.svg
 output.txt
-hatviz-trajectory-*.json
+hat-billiards-trajectory-*.json
 Diagnostics/
+Experiments/
+traj.txt
 
 # Large local trajectory/data dumps
 Trajectories/
