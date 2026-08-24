@@ -3,11 +3,13 @@
 This repository contains an interactive simulation and analysis tools for studying
 tiling billiards on aperiodic hat tilings.
 
-The project was developed as companion research code for a math paper. The
-mathematical motivation is to study billiard-like trajectories on aperiodic
+The project was developed as companion research code for a math paper, which can be found in the 
+project page link. The mathematical motivation is to study billiard-like trajectories on aperiodic
 tilings, a setting that appears to have seen very little direct exploration.
 Diana Davis has briefly mentioned considering related simulations for Penrose
 tiling billiards with Pat Hooper; this project focuses on the hat monotile substitution tiling.
+
+Project page: https://aidan-perry.github.io/Hat-tiling-billiards-simulation/
 
 The code began from Craig S. Kaplan's `hatviz` visualizer for constructing
 aperiodic hat tilings. This repository extends that visualizer with trajectory
