@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>Hat Tiling Billiards | Aidan Perry</title>
+    <title>Dynamics of Tiling Billiards on Aperiodic Hat Tilings | Aidan Perry</title>
 
     <style>
         :root {
@@ -13,6 +12,7 @@
             --muted: #666666;
             --accent: #315a7d;
             --border: #d9d9d4;
+            --card: #ffffff;
         }
 
         * {
@@ -28,36 +28,30 @@
         }
 
         main {
-            max-width: 850px;
+            max-width: 900px;
             margin: 0 auto;
-            padding: 70px 24px 80px;
+            padding: 60px 24px 80px;
         }
 
         h1 {
             margin: 0;
-            font-size: 2.8rem;
+            font-size: 2.5rem;
             line-height: 1.15;
             font-weight: 600;
         }
 
         .author {
             margin-top: 0.5rem;
-            margin-bottom: 2.5rem;
-            color: var(--muted);
-            font-size: 1.15rem;
-        }
-
-        .subtitle {
-            font-size: 1.25rem;
-            line-height: 1.5;
             margin-bottom: 2rem;
+            color: var(--muted);
+            font-size: 1.1rem;
         }
 
         .buttons {
             display: flex;
             flex-wrap: wrap;
             gap: 12px;
-            margin: 2rem 0 3.5rem;
+            margin: 1.5rem 0 2.5rem;
         }
 
         .button {
@@ -77,12 +71,21 @@
         }
 
         .secondary {
-            color: var(--accent);
             background: transparent;
+            color: var(--accent);
         }
 
-        .button:hover {
-            opacity: 0.82;
+        .hero {
+            margin: 2rem 0 2.5rem;
+        }
+
+        .hero img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: white;
         }
 
         section {
@@ -90,7 +93,7 @@
         }
 
         h2 {
-            font-size: 1.45rem;
+            font-size: 1.4rem;
             margin-bottom: 1rem;
             padding-bottom: 0.35rem;
             border-bottom: 1px solid var(--border);
@@ -99,6 +102,27 @@
         p {
             margin-top: 0;
             margin-bottom: 1.1rem;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 18px 20px;
+        }
+
+        pre {
+            overflow-x: auto;
+            background: #f1f1ee;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px;
+            line-height: 1.45;
+        }
+
+        code {
+            font-family: Menlo, Consolas, monospace;
+            font-size: 0.92rem;
         }
 
         a {
@@ -115,69 +139,60 @@
 
         @media (max-width: 600px) {
             main {
-                padding-top: 45px;
+                padding-top: 40px;
             }
 
             h1 {
-                font-size: 2.1rem;
+                font-size: 2rem;
             }
         }
     </style>
 </head>
-
 <body>
 <main>
 
     <header>
-        <h1>Hat Tiling Billiards</h1>
-
-        <p class="author">
-            Aidan Perry
-        </p>
-
-        <p class="subtitle">
-            Tiling billiards and symbolic dynamics on hierarchical
-            aperiodic tilings by the hat monotile.
-        </p>
+        <h1>Dynamics of Tiling Billiards on Aperiodic Hat Tilings</h1>
+        <p class="author">Aidan Perry</p>
 
         <div class="buttons">
-            <a class="button primary"
-               href="Hat_tiling_billiards_manuscript.pdf">
+            <a class="button primary" href="Hat_tiling_billiards_manuscript.pdf">
                 Read the Manuscript
             </a>
-
-            <a class="button secondary"
-               href="https://github.com/Aidan-Perry/Hat-tiling-billiards-simulation">
+            <a class="button secondary" href="https://github.com/Aidan-Perry/Hat-tiling-billiards-simulation">
                 View Code on GitHub
+            </a>
+            <a class="button secondary" href="paper_citation.bib">
+                Download Paper BibTeX
             </a>
         </div>
     </header>
+
+    <div class="hero">
+        <img src="Sigil_screenshot.png" alt="Hat tiling billiards figure or trajectory visualization">
+    </div>
 
     <section>
         <h2>Abstract</h2>
 
         <p>
-            We study tiling billiards on hierarchical aperiodic tilings by
-            the hat monotile. Using computational experiments, we observe
-            substantial geometric organization in trajectories, including
-            three direction-dependent visual styles, recurring local motifs,
-            spatial clustering, extensive path reversal, and abundant
-            seemingly periodic behavior. In particular, we conjecture that
-            every nonsingular trajectory in one distinguished class of
-            hat-edge directions is periodic.
+            We study tiling billiards on hierarchical aperiodic tilings by the hat monotile.
+            Using computational experiments, we observe substantial geometric organization in
+            trajectories, including three direction-dependent visual styles, recurring local motifs,
+            spatial clustering, extensive path reversal, and abundant seemingly periodic behavior.
+            In particular, we conjecture that every nonsingular trajectory in one distinguished
+            class of hat-edge directions is periodic.
         </p>
 
         <p>
-            The apparent prevalence of periodicity parallels preliminary
-            observations previously reported for Penrose tiling billiards
-            and suggests that strong recurrence may be a broader feature of
-            billiards on aperiodic tilings. We also study the symbolic dynamics
-            obtained by recording successive hat crossings. We prove that the
-            global language complexity of nonsingular trajectories grows at
-            most quintically, and hence that the associated global symbolic
-            system has topological entropy zero. We conjecture that this bound
-            can be substantially improved and that the language complexity of
-            every individual nonsingular trajectory grows linearly.
+            The apparent prevalence of periodicity parallels preliminary observations previously
+            reported for Penrose tiling billiards and suggests that strong recurrence may be a broader
+            feature of billiards on aperiodic tilings. We also study the symbolic dynamics obtained
+            by recording successive hat crossings. We prove that the global language complexity of
+            nonsingular trajectories grows at most quintically, and hence that the associated global
+            symbolic system has topological entropy zero. We conjecture that this bound can be
+            substantially improved and that the language complexity of every individual nonsingular
+            trajectory grows linearly.
         </p>
     </section>
 
@@ -186,23 +201,53 @@
 
         <p>
             <strong>Manuscript:</strong>
-            <a href="Hat_tiling_billiards_manuscript.pdf">
-                Hat Tiling Billiards (PDF)
-            </a>
+            <a href="Hat_tiling_billiards_manuscript.pdf">PDF</a>
         </p>
 
         <p>
-            <strong>Simulation and source code:</strong>
+            <strong>Paper BibTeX:</strong>
+            <a href="paper_citation.bib">paper_citation.bib</a>
+        </p>
+
+        <p>
+            <strong>Simulation repository:</strong>
             <a href="https://github.com/Aidan-Perry/Hat-tiling-billiards-simulation">
                 GitHub repository
             </a>
         </p>
     </section>
 
+    <section>
+        <h2>How to Cite</h2>
+
+        <div class="card">
+            <p><strong>Paper:</strong></p>
+            <p>
+                Aidan Perry, <em>Dynamics of Tiling Billiards on Aperiodic Hat Tilings</em>,
+                manuscript, 2026. Available at
+                <a href="https://aidan-perry.github.io/Hat-tiling-billiards-simulation/">
+                    the project website
+                </a>.
+            </p>
+
+            <pre><code>@unpublished{Perry2026DynamicsOfTilingBilliards,
+  author = {Perry, Aidan},
+  title  = {Dynamics of Tiling Billiards on Aperiodic Hat Tilings},
+  year   = {2026},
+  note   = {Manuscript},
+  url    = {https://aidan-perry.github.io/Hat-tiling-billiards-simulation/}
+}</code></pre>
+
+            <p><strong>Code:</strong></p>
+            <p>
+                If you use the simulation software, please cite the repository using the
+                citation information provided in GitHub’s <em>Cite this repository</em> panel.
+            </p>
+        </div>
+    </section>
+
     <footer>
-        <p>
-            Research project by Aidan Perry.
-        </p>
+        <p>Research project by Aidan Perry.</p>
     </footer>
 
 </main>
