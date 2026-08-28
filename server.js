@@ -3,6 +3,7 @@ const http = require('http');
 const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
+const legalHatCrossings = require('./legal-hat-crossings');
 
 // Local compute server for the browser app. The browser can run small
 // trajectories directly, but level-6 patches and diagnostics are handled here.
@@ -97,6 +98,16 @@ function cloneCrossing( crossing ) {
 	};
 }
 
+function cloneSymbolicValidity( validity ) {
+	return validity ? {
+		valid: validity.valid,
+		legalTokenCount: validity.legalTokenCount,
+		invalidCount: validity.invalidCount,
+		firstInvalid: validity.firstInvalid ? Object.assign( {}, validity.firstInvalid ) : null,
+		invalid: (validity.invalid || []).map( entry => Object.assign( {}, entry ) )
+	} : null;
+}
+
 function serializeTileForJSON( tile ) {
 	return {
 		id: tile.id,
@@ -156,6 +167,11 @@ function cacheTrajectoryMetadata( result ) {
 	} else {
 		result.finalEdge = null;
 	}
+}
+
+function annotateSymbolicValidity( result ) {
+	result.symbolicValidity = legalHatCrossings.validateCrossings( result.crossings || [] );
+	return result.symbolicValidity;
 }
 
 function pointDistance( a, b ) {
@@ -655,10 +671,11 @@ function hatVisitStats( result ) {
 }
 
 function buildHatCuttingSequenceDiagnostics( results ) {
-	return (results || []).map( (result, idx) => {
+	return (results || []).filter( result =>
+		!result.symbolicValidity || result.symbolicValidity.valid ).map( (result, idx) => {
 		const entries = (result.crossings || []).map( (crossing, crossingIdx) => ( {
 			bounce: crossingIdx + 1,
-			symbol: `${crossing.edgeIndex}->${crossing.nextEdgeIndex == null ? '?' : crossing.nextEdgeIndex}`,
+			symbol: legalHatCrossings.tokenForCrossing( crossing ),
 			edgeIndex: crossing.edgeIndex,
 			fromTileId: crossing.fromTileId,
 			toTileId: crossing.toTileId == null ? null : crossing.toTileId,
@@ -1366,6 +1383,24 @@ function enforceMetatileContinuity( transitions, analysis ) {
 }
 
 function buildLegacyMetatileSequenceForResult( result, analysis, metatileLevel ) {
+	if( result.symbolicValidity && !result.symbolicValidity.valid ) {
+		return {
+			id: result.color || 'trajectory',
+			color: result.color || 'red',
+			label: result.color || 'trajectory',
+			type: 'metatile-boundary',
+			metatileLevel,
+			outlineCount: analysis.outlines.length,
+			count: 0,
+			transitionCount: 0,
+			gapCount: 0,
+			tokens: [],
+			entries: [],
+			valid: false,
+			invalidReason: 'illegal-hat-crossing',
+			symbolicValidity: cloneSymbolicValidity( result.symbolicValidity )
+		};
+	}
 	const points = result.points || [];
 	const eps = result.tiling && result.tiling.tolerances ?
 		result.tiling.tolerances.EPS * 1000 : 1e-7;
@@ -1473,6 +1508,27 @@ function clusterTransitionToken( entry ) {
 }
 
 function buildMetatileSequenceForResult( result, analysis ) {
+	if( result.symbolicValidity && !result.symbolicValidity.valid ) {
+		return {
+			id: result.color || 'trajectory',
+			color: result.color || 'red',
+			label: result.color || 'trajectory',
+			type: 'metatile-boundary',
+			metatileLevel: 1,
+			outlineCount: analysis.clusters.length,
+			clusterCount: analysis.clusters.length,
+			count: 0,
+			transitionCount: 0,
+			gapCount: 0,
+			ambiguousCount: 0,
+			tokens: [],
+			entries: [],
+			valid: false,
+			invalidReason: 'illegal-hat-crossing',
+			symbolicValidity: cloneSymbolicValidity( result.symbolicValidity ),
+			languageComplexity: languageComplexityDiagnostics( [], 0 )
+		};
+	}
 	const entries = [];
 	for( const [crossingIdx, crossing] of (result.crossings || []).entries() ) {
 		const fromClusterId = analysis.clusterOfHat.get( crossing.fromTileId );
@@ -1595,6 +1651,18 @@ function buildDiagnosticsPayload( req, specs, results ) {
 	const runId = crypto.randomBytes( 4 ).toString( 'hex' );
 	const fileName = diagnosticsFileName( timestamp, runId );
 	const publicResults = results.map( publicResult );
+	const invalidHatSequences = publicResults
+		.filter( result => result.symbolicValidity && !result.symbolicValidity.valid )
+		.map( result => ( {
+			id: result.color || 'trajectory',
+			color: result.color || 'red',
+			label: result.color || 'trajectory',
+			type: 'hat-edge',
+			valid: false,
+			invalidReason: 'illegal-hat-crossing',
+			count: result.crossings.length,
+			symbolicValidity: cloneSymbolicValidity( result.symbolicValidity )
+		} ) );
 	return {
 		format: 'hat-billiards-diagnostics',
 		version: 1,
@@ -1613,6 +1681,7 @@ function buildDiagnosticsPayload( req, specs, results ) {
 				status: result.status,
 				pointCount: result.points.length,
 				crossingCount: result.crossings.length,
+				symbolicValidity: cloneSymbolicValidity( result.symbolicValidity ),
 				hatVisitStats: hatVisitStats( result ),
 				startEdge: specs[idx] ? specs[idx].startEdge : result.requestedStartEdge,
 				edgeParameter: specs[idx] ? specs[idx].edgeParameter : result.requestedEdgeParameter,
@@ -1623,6 +1692,7 @@ function buildDiagnosticsPayload( req, specs, results ) {
 		},
 		symbolic: {
 			hatSequences: buildHatCuttingSequenceDiagnostics( publicResults ),
+			invalidHatSequences,
 			metatileSequences: {
 				available: true,
 				maxLevel: 1,
@@ -1794,6 +1864,7 @@ function publicResult( result ) {
 		requestedAngleDegrees: result.requestedAngleDegrees,
 		expansions: result.expansions,
 		periodicity: result.periodicity || null,
+		symbolicValidity: cloneSymbolicValidity( result.symbolicValidity ),
 		initialDirection: clonePoint( result.initialDirection ),
 		focusTileIds: (result.focusTileIds || []).slice(),
 		startEdge: cloneEdge( result.startEdge ),
@@ -1894,6 +1965,7 @@ function handleRun( body ) {
 		result.requestedEdgeParameter = spec.edgeParameter;
 		result.requestedAngleDegrees = spec.angleDegrees;
 		cacheTrajectoryMetadata( result );
+		annotateSymbolicValidity( result );
 		checkTrajectoryPeriodicity( result );
 		return result;
 	} );
@@ -1903,6 +1975,7 @@ function handleRun( body ) {
 			`[run] ${result.color || 'red'} status=${result.status} ` +
 			`bounces=${result.crossings.length}/${result.requestedBounces} ` +
 			`points=${result.points.length} focus=${(result.focusTileIds || []).length} ` +
+			`symbolic=${result.symbolicValidity && !result.symbolicValidity.valid ? 'invalid' : 'valid'} ` +
 			`level=${result.level}` );
 	}
 	const payloadStart = Date.now();

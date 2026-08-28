@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const legalHatCrossings = require('./legal-hat-crossings');
 
 const ROOT = __dirname;
 
@@ -123,7 +124,7 @@ function interiorCandidates( tiling, config ) {
 }
 
 function tokenForCrossing( crossing ) {
-	return `${crossing.edgeIndex}->${crossing.nextEdgeIndex == null ? '?' : crossing.nextEdgeIndex}`;
+	return legalHatCrossings.tokenForCrossing( crossing );
 }
 
 function addSubstrings( tokens, sets ) {
@@ -193,7 +194,8 @@ function run( config ) {
 		};
 		const result = context.HatBilliards.runTrajectory( tiling, spec );
 		const bounceCount = Array.isArray( result.crossings ) ? result.crossings.length : 0;
-		if( result.status === 'completed' && bounceCount >= config.maxBounces ) {
+		const symbolicValidity = legalHatCrossings.validateCrossings( result.crossings || [] );
+		if( result.status === 'completed' && bounceCount >= config.maxBounces && symbolicValidity.valid ) {
 			addSubstrings( result.crossings.map( tokenForCrossing ), sets );
 			completed += 1;
 			if( completed % 25 === 0 || completed === config.trajectoryCount ) {
@@ -201,7 +203,8 @@ function run( config ) {
 				console.log( `[sample] completed ${completed}/${config.trajectoryCount} after ${attempts} attempts (${elapsed}s)` );
 			}
 		} else {
-			statuses.set( result.status, (statuses.get( result.status ) || 0) + 1 );
+			const status = symbolicValidity.valid ? result.status : 'invalid-symbolic-sequence';
+			statuses.set( status, (statuses.get( status ) || 0) + 1 );
 		}
 	}
 	if( completed < config.trajectoryCount ) {

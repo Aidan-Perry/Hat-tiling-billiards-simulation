@@ -164,6 +164,15 @@
 			renderTokenSequence( item, sequence );
 			grid.appendChild( item );
 		}
+		for( const sequence of symbolic.invalidHatSequences || [] ) {
+			const item = div( 'sequence-item' );
+			const first = sequence.symbolicValidity && sequence.symbolicValidity.firstInvalid;
+			const detail = first ?
+				`${sequence.label || sequence.id}: invalid at bounce ${first.bounce} (${first.token})` :
+				`${sequence.label || sequence.id}: invalid symbolic sequence`;
+			item.appendChild( div( 'empty', detail ) );
+			grid.appendChild( item );
+		}
 		if( grid.childNodes.length === 0 ) {
 			grid.appendChild( div( 'empty', 'No hat crossings in the latest run.' ) );
 		}
@@ -352,6 +361,16 @@
 			card.appendChild( meta );
 			const grid = div( 'sequence-grid' );
 			for( const sequence of levelPayload.sequences || [] ) {
+				if( sequence.valid === false ) {
+					const item = div( 'sequence-item' );
+					const first = sequence.symbolicValidity && sequence.symbolicValidity.firstInvalid;
+					const detail = first ?
+						`${sequence.label || sequence.id}: invalid at bounce ${first.bounce} (${first.token})` :
+						`${sequence.label || sequence.id}: invalid symbolic sequence`;
+					item.appendChild( div( 'empty', detail ) );
+					grid.appendChild( item );
+					continue;
+				}
 				const item = div( 'sequence-item' );
 				renderTokenSequence( item, sequence );
 				grid.appendChild( item );

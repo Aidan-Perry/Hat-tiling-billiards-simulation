@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const legalHatCrossings = require('./legal-hat-crossings');
 
 const ROOT = __dirname;
 
@@ -184,8 +185,7 @@ function generateAngles( config ) {
 }
 
 function crossingToken( crossing ) {
-	const next = crossing.nextEdgeIndex == null ? '?' : crossing.nextEdgeIndex;
-	return `${crossing.edgeIndex}->${next}`;
+	return legalHatCrossings.tokenForCrossing( crossing );
 }
 
 function copyFileIntoOpenFd( inputPath, outputFd ) {
@@ -231,6 +231,7 @@ function runExperiment( config ) {
 
 	const problemRuns = [];
 	let removedRunCount = 0;
+	let invalidRunCount = 0;
 	let writtenRunCount = 0;
 	let shortestLength = Infinity;
 	let shortestKeptLength = Infinity;
@@ -248,16 +249,21 @@ function runExperiment( config ) {
 			} );
 			const tokens = (result.crossings || []).map( crossingToken );
 			const length = tokens.length;
+			const symbolicValidity = legalHatCrossings.validateCrossings( result.crossings || [] );
 			shortestLength = Math.min( shortestLength, length );
 			const incomplete = result.status !== 'completed' || length < config.maxBounces;
-			if( incomplete ) {
+			const invalid = !symbolicValidity.valid;
+			if( incomplete || invalid ) {
 				problemRuns.push( {
 					angle: angle.label,
-					status: result.status,
-					length
+					status: invalid ? 'invalid-symbolic-sequence' : result.status,
+					length,
+					firstInvalid: symbolicValidity.firstInvalid
 				} );
 			}
-			if( config.dropIncomplete && incomplete ) {
+			if( invalid ) {
+				invalidRunCount += 1;
+			} else if( config.dropIncomplete && incomplete ) {
 				removedRunCount += 1;
 			} else {
 				shortestKeptLength = Math.min( shortestKeptLength, length );
@@ -281,6 +287,7 @@ function runExperiment( config ) {
 		shortestKeptLength,
 		problemRuns,
 		removedRunCount,
+		invalidRunCount,
 		writtenRunCount,
 		tiling );
 	const outputFd = fs.openSync( outputPath, 'w' );
@@ -296,6 +303,7 @@ function runExperiment( config ) {
 		totalRuns: angles.length,
 		writtenRuns: writtenRunCount,
 		removedRunCount,
+		invalidRunCount,
 		shortestLength,
 		shortestKeptLength,
 		problemRuns
@@ -310,12 +318,16 @@ function buildHeader(
 	shortestKeptLength,
 	problemRuns,
 	removedRunCount,
+	invalidRunCount,
 	writtenRunCount,
 	tiling ) {
 	const firstAngle = angles.length > 0 ? angles[0].label : 'n/a';
 	const lastAngle = angles.length > 0 ? angles[angles.length - 1].label : 'n/a';
 	const problemList = problemRuns.length === 0 ? 'none' :
-		problemRuns.map( run => `${run.angle}:${run.length}:${run.status}` ).join( ', ' );
+		problemRuns.map( run => {
+			const first = run.firstInvalid ? `:${run.firstInvalid.bounce}:${run.firstInvalid.token}` : '';
+			return `${run.angle}:${run.length}:${run.status}${first}`;
+		} ).join( ', ' );
 	return [
 		'# format: hat-billiards-hat-sequences-tsv',
 		'# version: 1',
@@ -331,12 +343,13 @@ function buildHeader(
 		`# total_run_count: ${angles.length}`,
 		`# written_run_count: ${writtenRunCount}`,
 		`# incomplete_removed: ${removedRunCount}`,
+		`# invalid_symbolic_removed: ${invalidRunCount}`,
 		`# drop_incomplete: ${config.dropIncomplete ? 'true' : 'false'}`,
 		`# tiling_tile_count: ${tiling.tiles.length}`,
 		`# shortest_sequence_length: ${Number.isFinite( shortestLength ) ? shortestLength : 0}`,
 		`# shortest_written_sequence_length: ${Number.isFinite( shortestKeptLength ) ? shortestKeptLength : 0}`,
-		`# non_completed_or_short_count: ${problemRuns.length}`,
-		`# non_completed_or_short_runs: ${problemList}`,
+		`# problem_run_count: ${problemRuns.length}`,
+		`# problem_runs: ${problemList}`,
 		'# columns: angle_deg<TAB>sequence_length<TAB>status<TAB>sequence_tokens'
 	].join( '\n' );
 }
@@ -348,7 +361,7 @@ function main() {
 		console.log( `[write] ${result.outputPath}` );
 		console.log(
 			`[summary] runs=${result.totalRuns} written=${result.writtenRuns} ` +
-			`removed=${result.removedRunCount} shortest=${result.shortestLength} ` +
+			`removed=${result.removedRunCount} invalid=${result.invalidRunCount} shortest=${result.shortestLength} ` +
 			`shortest_written=${result.shortestKeptLength} problem_runs=${result.problemRuns.length}` );
 	} catch( err ) {
 		console.error( err && err.stack ? err.stack : String( err ) );
